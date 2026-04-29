@@ -84,14 +84,9 @@ Debug-only outputs:
 - produce `edited.srt`
 - keep `report.json` compact and execution-facing
 
-## Phase 4 — retired ideas
+## Phase 4 — archived ideas
 
-Do not revive these in the active mainline:
-- global glossary stores
-- glossary accumulation or promotion
-- standalone auxiliary review stages
-- intermediate text-polishing layers before Hermes final
-- oversized report schemas tied to legacy control flow
+The older transcribe path had several extra layers. Keep the active mainline small and avoid reintroducing those workflow branches unless a migration task needs historical reference.
 
 ## Phase 5 — verification
 

@@ -144,16 +144,6 @@ Debug only:
 - `final_delivery_audit.json`
 - `correction_log.json`
 
-## Retired from active maintenance
-Treat these as archive-only unless a migration task explicitly needs them for reference:
-- global glossary stores
-- glossary candidate accumulation
-- promotion logs
-- promoted-term pipelines
-- standalone auxiliary review stages
-- intermediate text-polishing stages before Hermes final
-- oversized report schemas that encode old workflow control
-
 ## Current implementation shape
 
 - The active skill directory includes a minimal runnable pipeline:

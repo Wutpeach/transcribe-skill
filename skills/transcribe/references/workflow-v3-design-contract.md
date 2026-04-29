@@ -108,26 +108,12 @@ Treat these as internal or debug-only unless there is a specific reason to expos
 ## Design simplifications
 
 ### Old system status
-The older transcribe system is retired from the active mainline.
+The older transcribe system is archived.
 
-Treat these legacy ideas and modules as archive-only unless a migration task explicitly revives them for reference:
-- multi-layer glossary architecture
-- glossary candidate accumulation
-- glossary promotion flows
-- standalone auxiliary review authority stages
-- intermediate text-rewrite stages before Hermes final
-- report schemas that mirror legacy multi-stage control flow
-
-Do not spend active maintenance effort on the retired path.
+Keep active maintenance focused on the current run-scoped glossary, direct Step 2A drafting, and agent-owned Hermes final adjudication. Older multi-layer workflow branches belong in historical reference only.
 
 ### Glossary model
 Use a single per-run glossary.
-
-Remove or avoid:
-- global glossary stores
-- glossary candidate accumulation
-- promotion logs
-- promoted-term pipelines
 
 The glossary is a local helper for the current run, not a long-term terminology platform.
 
