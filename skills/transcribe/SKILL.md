@@ -204,9 +204,9 @@ Step 2 owns structure. Step 3 / Hermes owns delivery judgment.
 
 ## Reference documents
 
-Use these when you need deeper history, replay lessons, or migration context:
-- `references/real-run-findings.md`
-- `references/workflow-v3-design-contract.md`
-- `references/implementation-plan.md`
-- `references/agent-step3-adjudication-contract.md`
-- `references/step3-final-adjudication-contract.md`
+Read these selectively when the task calls for deeper context:
+- debugging replay regressions or reviewing real-sample failures → `references/real-run-findings.md`
+- changing workflow contracts or authority boundaries → `references/workflow-v3-design-contract.md`
+- reviewing implementation sequencing or migration scope → `references/implementation-plan.md`
+- performing Step 3 adjudication design or writeback changes → `references/agent-step3-adjudication-contract.md`
+- checking final Step 3 output expectations → `references/step3-final-adjudication-contract.md`
