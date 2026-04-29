@@ -1,4 +1,5 @@
 config/funasr.local.toml
+config/auxiliary.local.toml
 .env.local
 __pycache__/
 *.pyc

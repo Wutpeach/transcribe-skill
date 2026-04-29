@@ -1,0 +1,6 @@
+[auxiliary]
+base_url = "https://api.deepseek.com/v1"
+api_key = "sk-your-auxiliary-key"
+# Optional local overrides:
+# api_mode = "chat_completions"
+# model = "deepseek-v4-flash"

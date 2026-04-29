@@ -1,6 +1,6 @@
 ---
 name: transcribe
-description: "Minimal active transcription workflow: FunASR to raw.json, Step 2 / 2A segmentation with per-run run_glossary.json, and Step 3 / Hermes final delivery."
+description: "Minimal active transcription workflow: FunASR to raw.json, Step 2 / 2A segmentation with per-run run_glossary.json, and Step 3 live-agent final delivery."
 version: 1.2.0
 author: Hermes Agent
 license: MIT
@@ -83,7 +83,7 @@ Rules:
 - Downgrade weak `manuscript-priority` runs to `raw-priority` conservatively.
 - Mark weak regions and downgrade reasons explicitly.
 
-### Step 3 — Hermes / live agent adjudication
+### Step 3 — Final Adjudication / live agent adjudication
 Pipeline handoff outputs:
 - `agent_review_bundle.json`
 - `report.json`
@@ -94,19 +94,19 @@ Final delivery outputs:
 - `final_delivery_audit.json`
 
 Rules:
-- Step 3 is owned by the live interactive agent session.
+- Step 3 is owned by the current live interactive agent session.
 - Use `raw.json` as the fact anchor.
 - Read Step 2 artifacts such as `edited-script-pass.srt`, `proofread_manuscript.json`, `aligned_segments.json`, `alignment_audit.json`, `run_glossary.json`, and `report.json`.
 - Use `edited-script-pass.srt` as the default editable base.
 - Apply conservative term and casing fixes, mixed zh-en spacing cleanup, light error correction, and cue-level re-segmentation when delivery quality needs it.
-- Hermes is the sole final adjudicator.
+- The current Step 3 live agent is the sole final adjudicator.
 - Final delivery files are late-bound and should be written by `write_step3_review_artifacts()`.
 
 ## Authority order
 
 Use this order whenever there is conflict:
 
-`audio facts > raw timing/text evidence > protected term boundaries from run_glossary > manuscript local clues > Hermes judgment`
+`audio facts > raw timing/text evidence > protected term boundaries from run_glossary > manuscript local clues > Step 3 judgment`
 
 ## Default artifacts
 
@@ -179,11 +179,13 @@ Preferred Step 1 credential/config layout:
 - Put portable defaults in `config/funasr.toml`.
 - Put machine-local secrets in `config/funasr.local.toml` or `.env.local`.
 - Include `config/funasr.local.example.toml` when sharing the skill.
-- Preferred discovery order is: explicit CLI key, skill-local secret config, skill-local env file, broader Hermes environment.
+- Preferred discovery order is: explicit CLI key, skill-local secret config, skill-local env file, broader host environment.
 
 Step 2A provider notes:
-- `scripts/auxiliary_config.py` resolves the Step 2A auxiliary model from `config/models.toml`, `config/transcribe.toml`, Hermes provider config, and prompt files.
-- A dedicated direct provider alias such as `deepseek_direct_aux` can be used for Step 2A only.
+- Public setup should collect an OpenAI-compatible auxiliary `base_url` and `api_key`.
+- Step 2A local secrets can live in `.env.local` or `config/auxiliary.local.toml`.
+- `scripts/auxiliary_config.py` resolves the Step 2A auxiliary model from `config/models.toml`, `config/transcribe.toml`, skill-local env/config, and compatible host-managed config.
+- A dedicated direct provider alias such as `deepseek_direct_aux` can still be used where the host runtime supports it.
 
 ## Review checklist
 
@@ -198,9 +200,9 @@ On a real sample, check these first:
 Keep this control shape explicit:
 - Step 1 = FunASR only
 - Step 2 = configured auxiliary model plus pipeline guardrails
-- Step 3 = the live interactive agent session itself, such as Hermes or OpenClaw
+- Step 3 = the current live interactive agent session itself
 
-Step 2 owns structure. Step 3 / Hermes owns delivery judgment.
+Step 2 owns structure. Step 3 owns delivery judgment.
 
 ## Reference documents
 

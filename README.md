@@ -1,6 +1,8 @@
 # transcribe-skill
 
-面向 Hermes 类 agent 的转录与字幕 skill。
+跨 Agent 平台的转录与字幕 skill。
+
+适用于 Hermes、OpenClaw、pi agent、nanobot、Codex CLI 等能够在本地运行 skill、读写文件并提供 API key 的宿主。
 
 这个 skill 用来把音频处理成可交付的 SRT 字幕。它把原始识别、术语处理、字幕切分、时间对齐和最终审校拆成清晰步骤，适合对术语准确性、断句质量和时间轴稳定性有要求的任务。
 
@@ -15,7 +17,7 @@
 
 - Step 1：用 FunASR 产出带时间信息的原始转录
 - Step 2：结合 manuscript 和 glossary 做文本校对、字幕切分、时间对齐和审计
-- Step 3：由 live agent 做最后一轮判断，输出可交付的 `edited.srt`
+- Step 3：由当前运行中的 live agent 做最终裁决，输出可交付的 `edited.srt`
 
 整个流程会保留中间产物，方便复查、调试和回放。
 
@@ -40,7 +42,7 @@ npx skills add Wutpeach/transcribe-skill --list
 npx skills add Wutpeach/transcribe-skill --skill transcribe
 ```
 
-### 手动安装到 Hermes
+### Hermes 手动安装示例
 
 把下面这个目录：
 
@@ -68,32 +70,45 @@ Python 版本要求见 `skills/transcribe/pyproject.toml`。当前项目要求 `
 
 ## 本地配置
 
-安装完成后，先进入 skill 目录，再创建本地配置：
+安装完成后，先进入 skill 目录，再创建本地配置和本地 env：
 
 ```bash
 cp config/funasr.local.example.toml config/funasr.local.toml
+cp .env.example .env.local
 ```
 
-然后把你的 DashScope / FunASR API key 写进去，或者使用本地环境变量：
+### Step 1：FunASR
 
-```bash
-DASHSCOPE_API_KEY=...
-```
+FunASR 的 base URL 固定在 `config/funasr.toml`。安装时只需要向用户索取 FunASR / DashScope API key，并写入：
+
+- `config/funasr.local.toml`
+- 或本地环境变量 `FUNASR_API_KEY` / `DASHSCOPE_API_KEY`
+
+### Step 2A：辅助模型
+
+Step 2A 按 OpenAI-compatible 接口理解。安装时向用户索取：
+
+- `AUXILIARY_BASE_URL`
+- `AUXILIARY_API_KEY`
+
+把它们写入 `.env.local`、`config/auxiliary.local.toml`，或宿主管理的本地环境配置。
 
 本地 secret 只保留在本机，不进入仓库。
 
 ### 配置文件说明
 
-- `config/funasr.toml`：公共默认配置
-- `config/funasr.local.toml`：机器本地 secret 和覆盖项
-- `config/models.toml` / `config/transcribe.toml`：Step 2 辅助模型与流程配置
+- `config/funasr.toml`：FunASR 公共默认配置
+- `config/funasr.local.toml`：FunASR 机器本地 secret 和覆盖项
+- `.env.local`：Step 2A 辅助模型等机器本地 env
+- `config/auxiliary.local.toml`：Step 2A 可选本地覆盖配置
+- `config/models.toml` / `config/transcribe.toml`：Step 2A 模型与流程配置
 
 ## 验证安装
 
 在 skill 目录里运行：
 
 ```bash
-python3 -m pip install -e .[dev]
+python3 -m pip install .[dev]
 python3 scripts/pipeline.py --help
 PYTHONPATH=scripts pytest tests/test_prompts.py -q
 ```
@@ -122,11 +137,12 @@ skills/
 2. 缺少依赖就先补齐
 3. 用 `npx skills add Wutpeach/transcribe-skill --skill transcribe` 安装，或手动复制 `skills/transcribe`
 4. 进入安装后的 skill 目录
-5. 运行 `python3 -m pip install -e .[dev]`
+5. 运行 `python3 -m pip install .[dev]`
 6. 如果 `config/funasr.local.toml` 不存在，就从模板复制生成
-7. 向用户索取 DashScope / FunASR API key；用户没有 key 时，引导注册和获取
-8. 把 key 写入本地配置或本地环境变量
-9. 运行验证命令，确认 skill 可直接使用
+7. 如果 `.env.local` 不存在，就从 `.env.example` 复制生成
+8. 向用户索取 FunASR / DashScope API key，并写入本地配置或本地环境变量
+9. 向用户索取 Step 2A 辅助模型的 OpenAI-compatible base URL 和 API key，并写入 `.env.local` 或宿主管理的本地环境配置
+10. 运行验证命令，确认 skill 可直接使用
 
 完成后让机器保持 ready-to-run 状态。
 

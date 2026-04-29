@@ -1,9 +1,17 @@
+[providers.auxiliary_openai_compatible]
+source = "openai_compatible"
+provider_name = "openai-compatible"
+base_url_env = "AUXILIARY_BASE_URL"
+api_key_env = "AUXILIARY_API_KEY"
+api_mode = "chat_completions"
+fallback_provider = "hermes_deepseek_direct"
+
 [providers.hermes_deepseek_direct]
 provider_alias = "deepseek_direct_aux"
 source = "hermes"
 
 [models.step2a_understanding]
-provider = "hermes_deepseek_direct"
+provider = "auxiliary_openai_compatible"
 model = "deepseek-v4-flash"
 api_mode = "chat_completions"
 temperature = 0.2
