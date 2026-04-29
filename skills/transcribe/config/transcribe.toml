@@ -1,0 +1,5 @@
+[step2a.auxiliary_model]
+enabled = true
+model_ref = "step2a_understanding"
+prompt_dir = "prompts/understanding"
+tasks = ["term_extraction", "entity_recovery", "manuscript_understanding", "deduplication"]

@@ -1,0 +1,5 @@
+[funasr]
+model = "fun-asr"
+base_http_api_url = "https://dashscope.aliyuncs.com/api/v1"
+language_hints = ["zh"]
+key_env = "DASHSCOPE_API_KEY"

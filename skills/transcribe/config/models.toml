@@ -1,0 +1,11 @@
+[providers.hermes_deepseek_direct]
+provider_alias = "deepseek_direct_aux"
+source = "hermes"
+
+[models.step2a_understanding]
+provider = "hermes_deepseek_direct"
+model = "deepseek-v4-flash"
+api_mode = "chat_completions"
+temperature = 0.2
+max_tokens = 32768
+timeout = 180
