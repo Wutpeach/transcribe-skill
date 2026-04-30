@@ -233,5 +233,10 @@ def update_report_for_step3_review(*, report_path: Path, finalizer_result: Final
     report["edited_cue_count"] = len(finalizer_result.cues)
     report["split_count"] = len(finalizer_result.split_operations)
     report["cue_splitting"] = dict(finalizer_result.delivery_audit.get("cue_splitting") or {})
+    report["delivery_timing_smoothing"] = {
+        "count": int(finalizer_result.delivery_audit.get("timing_smoothed_count") or 0),
+        "first_cue_snapped": bool(finalizer_result.delivery_audit.get("first_cue_start_snapped")),
+    }
+    report["timing_smoothed_count"] = int(finalizer_result.delivery_audit.get("timing_smoothed_count") or 0)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report

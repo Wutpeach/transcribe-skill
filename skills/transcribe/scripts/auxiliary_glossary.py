@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 
-from auxiliary_config import Step2AAuxiliaryConfig, load_prompt_text, load_step2a_auxiliary_config
+from auxiliary_config import AgentRuntimeConfig, Step2AAuxiliaryConfig, load_prompt_text, load_step2a_auxiliary_config
 
 
 @dataclass
@@ -135,6 +135,7 @@ def request_auxiliary_glossary_corrections(
     manuscript_text: str | None,
     skill_dir: Path | None = None,
     hermes_home: Path | None = None,
+    agent_runtime: AgentRuntimeConfig | None = None,
     urlopen=request.urlopen,
 ) -> list[AuxiliaryCorrection]:
     if not manuscript_text or not manuscript_text.strip():
@@ -143,6 +144,7 @@ def request_auxiliary_glossary_corrections(
     config = load_step2a_auxiliary_config(
         skill_dir=Path(skill_dir or Path(__file__).resolve().parents[1]),
         hermes_home=hermes_home,
+        agent_runtime=agent_runtime,
     )
     if not config.enabled:
         return []

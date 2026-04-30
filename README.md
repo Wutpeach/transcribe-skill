@@ -93,6 +93,12 @@ Step 2A 按 OpenAI-compatible 接口理解。安装时向用户索取：
 
 把它们写入 `.env.local`、`config/auxiliary.local.toml`，或宿主管理的本地环境配置。
 
+如果这组辅助模型配置不完整，skill 会回退到**当前 live agent 自身运行时**提供的模型入口，而不是绑定某个固定的宿主 provider alias。
+
+这个 live agent runtime 可以由宿主直接注入，也可以通过 `CURRENT_LIVE_AGENT_BASE_URL`、`CURRENT_LIVE_AGENT_API_KEY`、`CURRENT_LIVE_AGENT_API_MODE`、`CURRENT_LIVE_AGENT_PROVIDER_NAME` 这组环境变量提供。
+
+如果 Step 2A 的辅助模型请求本身失败，当前 live agent 会直接接管 Step 2 的 proofreading 和 segmentation，产出 Step 2 artifact，再把结果继续交给 Step 3 做原流程里的最终审校。此时 `draft_model_provider` 会标记成 `local-helper`，表示 fallback 产物来自本地 helper 逻辑。
+
 本地 secret 只保留在本机，不进入仓库。
 
 ### 配置文件说明

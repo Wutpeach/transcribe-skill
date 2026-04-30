@@ -105,6 +105,35 @@ def range_summary(indexes: list[int]) -> str:
     return ",".join(ranges)
 
 
+
+def apply_delivery_timing_smoothing(cues: list[SubtitleCue]) -> tuple[list[SubtitleCue], dict[str, Any]]:
+    if not cues:
+        return [], {"applied": False, "first_cue_snapped": False, "gaps_filled": 0}
+
+    epsilon = 1e-4
+    smoothed_cues = [SubtitleCue(index=cue.index, start=float(cue.start), end=float(cue.end), text=cue.text) for cue in cues]
+    first_cue_snapped = False
+    gaps_filled = 0
+
+    if abs(smoothed_cues[0].start) > epsilon:
+        smoothed_cues[0].start = 0.0
+        first_cue_snapped = True
+
+    for index in range(len(smoothed_cues) - 1):
+        current_cue = smoothed_cues[index]
+        next_cue = smoothed_cues[index + 1]
+        if float(current_cue.end) < float(next_cue.start) - epsilon:
+            current_cue.end = float(next_cue.start)
+            gaps_filled += 1
+
+    return smoothed_cues, {
+        "applied": True,
+        "first_cue_snapped": first_cue_snapped,
+        "gaps_filled": gaps_filled,
+    }
+
+
+
 def build_delivery_audit(
     *,
     cues: list[SubtitleCue],

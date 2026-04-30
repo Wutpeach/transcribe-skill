@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from contracts import AgentReviewBundle, GlossaryEntry, RunGlossary, SubtitleCue
 from finalizer import AgentReviewRequiredError, FinalizerResult, apply_cue_splits, build_agent_review_bundle, finalize_cues, write_agent_review_bundle
+from finalizer_audit import apply_delivery_timing_smoothing
 
 
 def test_build_agent_review_bundle_collects_step2_handoff_inputs():
@@ -151,6 +152,65 @@ def test_finalize_cues_rules_primary_does_not_merge_micro_cues_even_with_warning
     assert finalized.change_breakdown["delivery_resegmentations"]["count"] == 0
     assert finalized.delivery_audit["resegment_source"] == []
     assert finalized.correction_log["cue_changes"] == []
+
+
+def test_apply_delivery_timing_smoothing_snaps_first_cue_and_fills_positive_gaps():
+    cues = [
+        SubtitleCue(index=1, start=0.5, end=1.0, text="第一句"),
+        SubtitleCue(index=2, start=1.4, end=2.0, text="第二句"),
+        SubtitleCue(index=3, start=2.5, end=3.0, text="第三句"),
+    ]
+
+    smoothed_cues, metadata = apply_delivery_timing_smoothing(cues)
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in smoothed_cues] == [
+        (1, 0.0, 1.4, "第一句"),
+        (2, 1.4, 2.5, "第二句"),
+        (3, 2.5, 3.0, "第三句"),
+    ]
+    assert metadata == {
+        "applied": True,
+        "first_cue_snapped": True,
+        "gaps_filled": 2,
+    }
+    assert [(cue.start, cue.end) for cue in cues] == [(0.5, 1.0), (1.4, 2.0), (2.5, 3.0)]
+
+
+
+def test_apply_delivery_timing_smoothing_preserves_overlap_and_last_cue_end():
+    cues = [
+        SubtitleCue(index=1, start=0.0, end=1.2, text="第一句"),
+        SubtitleCue(index=2, start=1.0, end=1.8, text="第二句"),
+        SubtitleCue(index=3, start=2.0, end=2.6, text="第三句"),
+    ]
+
+    smoothed_cues, metadata = apply_delivery_timing_smoothing(cues)
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in smoothed_cues] == [
+        (1, 0.0, 1.2, "第一句"),
+        (2, 1.0, 2.0, "第二句"),
+        (3, 2.0, 2.6, "第三句"),
+    ]
+    assert metadata == {
+        "applied": True,
+        "first_cue_snapped": False,
+        "gaps_filled": 1,
+    }
+
+
+
+def test_apply_delivery_timing_smoothing_handles_single_cue_without_extending_end():
+    cues = [SubtitleCue(index=1, start=0.3, end=1.1, text="单句")]
+
+    smoothed_cues, metadata = apply_delivery_timing_smoothing(cues)
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in smoothed_cues] == [(1, 0.0, 1.1, "单句")]
+    assert metadata == {
+        "applied": True,
+        "first_cue_snapped": True,
+        "gaps_filled": 0,
+    }
+
 
 
 def test_finalize_cues_requires_live_agent_adjudication_when_proofread_context_is_provided():

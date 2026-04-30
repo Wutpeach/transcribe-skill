@@ -184,8 +184,11 @@ Preferred Step 1 credential/config layout:
 Step 2A provider notes:
 - Public setup should collect an OpenAI-compatible auxiliary `base_url` and `api_key`.
 - Step 2A local secrets can live in `.env.local` or `config/auxiliary.local.toml`.
-- `scripts/auxiliary_config.py` resolves the Step 2A auxiliary model from `config/models.toml`, `config/transcribe.toml`, skill-local env/config, and compatible host-managed config.
-- A dedicated direct provider alias such as `deepseek_direct_aux` can still be used where the host runtime supports it.
+- `scripts/auxiliary_config.py` resolves the Step 2A auxiliary model from `config/models.toml`, `config/transcribe.toml`, skill-local env/config, and the current live agent runtime.
+- If the Step 2A auxiliary config is incomplete, provider fallback should resolve against the current live agent session rather than a hardcoded host-specific provider alias.
+- Host runtimes can inject that fallback directly or expose it through `CURRENT_LIVE_AGENT_BASE_URL`, `CURRENT_LIVE_AGENT_API_KEY`, `CURRENT_LIVE_AGENT_API_MODE`, and `CURRENT_LIVE_AGENT_PROVIDER_NAME`.
+- If the Step 2A auxiliary request itself fails, the current live agent should take over Step 2 drafting work, produce Step 2 artifacts, and still hand the run to Step 3 for the normal final adjudication pass.
+- Agent takeover should report `draft_model_provider = "local-helper"` because the fallback artifact comes from local helper logic rather than a second live model call.
 
 ## Review checklist
 

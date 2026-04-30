@@ -4,11 +4,11 @@ provider_name = "openai-compatible"
 base_url_env = "AUXILIARY_BASE_URL"
 api_key_env = "AUXILIARY_API_KEY"
 api_mode = "chat_completions"
-fallback_provider = "hermes_deepseek_direct"
+fallback_provider = "current_live_agent"
 
-[providers.hermes_deepseek_direct]
-provider_alias = "deepseek_direct_aux"
-source = "hermes"
+[providers.current_live_agent]
+source = "agent"
+provider_name = "current-live-agent"
 
 [models.step2a_understanding]
 provider = "auxiliary_openai_compatible"

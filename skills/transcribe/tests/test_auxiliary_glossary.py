@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from auxiliary_config import AgentRuntimeConfig
 from auxiliary_glossary import AuxiliaryGlossaryError, _build_prompt, request_auxiliary_glossary_corrections
 
 
@@ -17,27 +18,22 @@ class DummyResponse(io.BytesIO):
         return False
 
 
+def _runtime() -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        provider_name="openclaw",
+        base_url="http://127.0.0.1:3000/v1",
+        api_key="sk-openclaw",
+        api_key_env="OPENCLAW_API_KEY",
+        api_mode="chat_completions",
+    )
+
+
 def test_build_prompt_includes_anti_duplication_guidance(tmp_path):
     skill_dir = Path(__file__).resolve().parents[1]
 
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        """
-providers:
-  deepseek_direct_aux:
-    name: deepseek_direct_aux
-    base_url: https://api.deepseek.com
-    key_env: DEEPSEEK_DIRECT_API_KEY
-    api_mode: chat_completions
-""".strip(),
-        encoding="utf-8",
-    )
-    (hermes_home / ".env").write_text("DEEPSEEK_DIRECT_API_KEY=***", encoding="utf-8")
-
     from auxiliary_config import load_step2a_auxiliary_config
 
-    config = load_step2a_auxiliary_config(skill_dir=skill_dir, hermes_home=hermes_home)
+    config = load_step2a_auxiliary_config(skill_dir=skill_dir, agent_runtime=_runtime())
     prompt = _build_prompt(
         raw_payload={"text": "好啊，你写一份详细的一份详细的 ppt", "segments": []},
         manuscript_text="好啊，你写一份详细的 PPT",

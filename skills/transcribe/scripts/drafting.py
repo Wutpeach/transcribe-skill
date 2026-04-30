@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from auxiliary_config import AgentRuntimeConfig
 from auxiliary_drafting import AuxiliaryDraftingError, request_auxiliary_manuscript_draft
 from contracts import (
     MAX_SUBTITLE_LINE_UNITS,
@@ -32,6 +33,7 @@ _PROTECTED_ACRONYM_RE = re.compile(r"\b[A-Z]{2,8}\b")
 _PROTECTED_MODEL_RE = re.compile(r"\b[A-Z]+[0-9]+[A-Z0-9]*\b")
 _PROTECTED_TITLE_PHRASE_RE = re.compile(r"\b[A-Z][A-Za-z0-9-]*(?:\s+[A-Z][A-Za-z0-9-]*){1,2}\b")
 _PROTECTED_MIXED_TERM_FRAGMENT_CHARS = set("的得地了吗呢啊吧呀有和在是这那个来去你我他她它们将还也都个就提到说讲聊造过向")
+_AGENT_FALLBACK_PROVIDER = "local-helper"
 
 
 @dataclass
@@ -93,8 +95,6 @@ def _apply_glossary_hints(text: str, glossary: RunGlossary) -> tuple[str, list[P
 
 
 def build_proofread_manuscript(*, raw_payload: dict, manuscript_text: str | None, mode: str, glossary: RunGlossary) -> ProofreadManuscript:
-    # Debug/bootstrap helper retained for local fixtures and tests.
-    # Mainline Step 2A should go through build_step2a_artifacts().
     recovery_edits: list[ProofreadEdit] = []
     recovery_decisions: list[dict] = []
     drafting_warnings = ["bootstrap proofreading only"]
@@ -154,7 +154,6 @@ def _max_prefix_index_within_limit(text: str, max_line_chars: int) -> int:
     return max(last_valid, 1)
 
 
-
 def _protected_text_candidates(glossary: RunGlossary) -> list[str]:
     candidates: list[str] = []
     for entry in glossary.terms:
@@ -163,7 +162,6 @@ def _protected_text_candidates(glossary: RunGlossary) -> list[str]:
             if clean and _is_protected_candidate(clean) and clean not in candidates:
                 candidates.append(clean)
     return sorted(candidates, key=len, reverse=True)
-
 
 
 def _looks_like_protected_mixed_term(text: str) -> bool:
@@ -184,7 +182,6 @@ def _looks_like_protected_mixed_term(text: str) -> bool:
     return all(re.sub(r"[^A-Za-z0-9]", "", token) for token in latin_tail)
 
 
-
 def _is_protected_candidate(text: str) -> bool:
     return (
         bool(_PROTECTED_ACRONYM_RE.fullmatch(text))
@@ -192,7 +189,6 @@ def _is_protected_candidate(text: str) -> bool:
         or bool(_PROTECTED_TITLE_PHRASE_RE.fullmatch(text))
         or _looks_like_protected_mixed_term(text)
     )
-
 
 
 def _collect_protected_spans(text: str, glossary: RunGlossary) -> list[tuple[int, int]]:
@@ -218,10 +214,8 @@ def _collect_protected_spans(text: str, glossary: RunGlossary) -> list[tuple[int
     return sorted(selected)
 
 
-
 def _split_index_is_safe(index: int, protected_spans: list[tuple[int, int]]) -> bool:
     return not any(start < index < end for start, end in protected_spans)
-
 
 
 def _adjust_split_index_for_protected_spans(index: int, protected_spans: list[tuple[int, int]]) -> int:
@@ -229,7 +223,6 @@ def _adjust_split_index_for_protected_spans(index: int, protected_spans: list[tu
         if start < index < end:
             return start if start > 0 else end
     return index
-
 
 
 def _split_long_piece(piece: str, max_line_chars: int, glossary: RunGlossary) -> list[str]:
@@ -256,7 +249,6 @@ def _split_long_piece(piece: str, max_line_chars: int, glossary: RunGlossary) ->
     if remaining:
         lines.append(remaining)
     return lines
-
 
 
 def _split_text_into_lines(text: str, glossary: RunGlossary, max_line_chars: int = MAX_LINE_CHARS) -> list[str]:
@@ -302,11 +294,7 @@ def _semantic_integrity_label(text: str) -> str:
 
 
 def build_subtitle_draft(*, raw_payload: dict, manuscript_text: str | None, mode: str, glossary: RunGlossary, proofread: ProofreadManuscript) -> SubtitleDraft:
-    # Debug/bootstrap helper retained for local fixtures and tests.
-    # Mainline Step 2A should go through build_step2a_artifacts().
     del manuscript_text
-    # Keep the bootstrap output contract stable so a future Hermes-managed LLM
-    # can swap in without changing downstream alignment expectations.
     if mode == "manuscript-priority":
         draft_source = proofread.proofread_text
         draft_notes = ["proofread manuscript draft"]
@@ -404,40 +392,70 @@ def _build_llm_subtitle_draft(
     return SubtitleDraft(lines=lines)
 
 
-def _build_manual_review_step2a_result(*, raw_payload: dict, manuscript_text: str | None, mode: str, reason: str) -> Step2ADraftingResult:
-    source_text = manuscript_text if mode == "manuscript-priority" and manuscript_text else _raw_text(raw_payload)
+def _build_agent_managed_fallback_step2a_result(
+    *,
+    raw_payload: dict,
+    manuscript_text: str | None,
+    mode: str,
+    glossary: RunGlossary,
+    reason: str,
+    fallback_code: str,
+    draft_attempt_count: int,
+) -> Step2ADraftingResult:
+    proofread = build_proofread_manuscript(
+        raw_payload=raw_payload,
+        manuscript_text=manuscript_text,
+        mode=mode,
+        glossary=glossary,
+    )
     proofread = ProofreadManuscript(
-        source_text=source_text,
-        proofread_text=source_text,
-        edit_summary="manual review required",
-        proofread_confidence=0.0,
-        draft_ready=False,
-        drafting_warnings=[reason],
+        source_text=proofread.source_text,
+        proofread_text=proofread.proofread_text,
+        edit_summary="agent managed fallback",
+        material_edits=proofread.material_edits,
+        entity_decisions=proofread.entity_decisions,
+        proofread_confidence=proofread.proofread_confidence,
+        draft_ready=True,
+        drafting_warnings=[reason, *proofread.drafting_warnings],
+    )
+    draft = build_subtitle_draft(
+        raw_payload=raw_payload,
+        manuscript_text=manuscript_text,
+        mode=mode,
+        glossary=glossary,
+        proofread=proofread,
     )
     return Step2ADraftingResult(
         proofread=proofread,
-        draft=SubtitleDraft(lines=[]),
-        drafting_mode="manual-review-required",
-        draft_model_provider=None,
+        draft=draft,
+        drafting_mode="agent-fallback",
+        draft_model_provider=_AGENT_FALLBACK_PROVIDER,
         draft_model_name=None,
-        draft_fallback_used=False,
+        draft_fallback_used=True,
         draft_fallback_reason=reason,
-        draft_fallback_code="auxiliary_request_failed",
-        draft_attempt_count=0,
-        text_authority="none",
-        manual_review_required=True,
+        draft_fallback_code=fallback_code,
+        draft_attempt_count=draft_attempt_count,
+        text_authority="interactive-agent",
+        manual_review_required=False,
         alert_reasons=[reason],
     )
 
 
-
-def build_step2a_artifacts(*, raw_payload: dict, manuscript_text: str | None, mode: str, glossary: RunGlossary) -> Step2ADraftingResult:
+def build_step2a_artifacts(
+    *,
+    raw_payload: dict,
+    manuscript_text: str | None,
+    mode: str,
+    glossary: RunGlossary,
+    agent_runtime: AgentRuntimeConfig | None = None,
+) -> Step2ADraftingResult:
     try:
         payload = request_auxiliary_manuscript_draft(
             raw_payload=raw_payload,
             manuscript_text=manuscript_text,
             mode=mode,
             skill_dir=Path(__file__).resolve().parents[1],
+            agent_runtime=agent_runtime,
         )
         proofread = _build_llm_proofread_manuscript(
             raw_payload=raw_payload,
@@ -469,13 +487,16 @@ def build_step2a_artifacts(*, raw_payload: dict, manuscript_text: str | None, mo
             manual_review_required=False,
             alert_reasons=alert_reasons,
         )
-    except Exception as exc:
+    except AuxiliaryDraftingError as exc:
         fallback_reason = str(exc).strip() or exc.__class__.__name__
-        return _build_manual_review_step2a_result(
+        return _build_agent_managed_fallback_step2a_result(
             raw_payload=raw_payload,
             manuscript_text=manuscript_text,
             mode=mode,
+            glossary=glossary,
             reason=fallback_reason,
+            fallback_code=exc.code,
+            draft_attempt_count=exc.attempt_count,
         )
 
 

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from urllib import request
+from urllib.error import HTTPError, URLError
 
-from auxiliary_config import Step2AAuxiliaryConfig, load_prompt_text, load_step2a_auxiliary_config
+from auxiliary_config import AgentRuntimeConfig, Step2AAuxiliaryConfig, load_prompt_text, load_step2a_auxiliary_config
 from contracts import MAX_SUBTITLE_LINE_UNITS, count_text_punctuation_violations, subtitle_display_length
 
 
@@ -27,6 +29,7 @@ _TAIL_DRIFT_LOW_SUPPORT_THRESHOLD = 0.4
 _TAIL_DRIFT_MIN_RUN = 3
 _TAIL_DRIFT_SCAN_START_RATIO = 0.6
 _TAIL_DRIFT_SUBSTRING_FUZZ = 6
+_LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_for_similarity(text: str) -> str:
@@ -363,11 +366,13 @@ def request_auxiliary_manuscript_draft(
     mode: str,
     skill_dir: Path | None = None,
     hermes_home: Path | None = None,
+    agent_runtime: AgentRuntimeConfig | None = None,
     urlopen=request.urlopen,
 ) -> dict[str, Any]:
     config = load_step2a_auxiliary_config(
         skill_dir=Path(skill_dir or Path(__file__).resolve().parents[1]),
         hermes_home=hermes_home,
+        agent_runtime=agent_runtime,
     )
     if not config.enabled:
         raise AuxiliaryDraftingError("Auxiliary drafting is disabled", code="auxiliary_disabled")
@@ -417,10 +422,13 @@ def request_auxiliary_manuscript_draft(
                 raise AuxiliaryDraftingError(drift_feedback, code="auxiliary_tail_drift", attempt_count=attempt)
             payload["attempt_count"] = attempt
             return payload
-        except Exception as exc:
+        except AuxiliaryDraftingError as exc:
             last_error = exc
-            if isinstance(exc, AuxiliaryDraftingError) and exc.code == "auxiliary_tail_drift":
+            if exc.code == "auxiliary_tail_drift":
                 retry_feedback = str(exc)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
+            last_error = exc
+            _LOGGER.warning("step2a auxiliary request failed on attempt %s: %s", attempt, exc)
     error_code = _error_code(last_error) if last_error else "auxiliary_request_failed"
     raise AuxiliaryDraftingError(
         f"Auxiliary drafting failed after {_MAX_AUXILIARY_DRAFT_ATTEMPTS} attempts: {last_error}",

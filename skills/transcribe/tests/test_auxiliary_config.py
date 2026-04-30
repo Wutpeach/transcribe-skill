@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from auxiliary_config import load_prompt_text, load_step2a_auxiliary_config
+from auxiliary_config import AgentRuntimeConfig, load_prompt_text, load_step2a_auxiliary_config
 
 
 TASKS = ["term_extraction", "entity_recovery", "manuscript_understanding", "deduplication"]
@@ -20,11 +20,11 @@ provider_name = "openai-compatible"
 base_url_env = "AUXILIARY_BASE_URL"
 api_key_env = "AUXILIARY_API_KEY"
 api_mode = "chat_completions"
-fallback_provider = "hermes_newapi"
+fallback_provider = "current_live_agent"
 
-[providers.hermes_newapi]
-provider_alias = "newapi"
-source = "hermes"
+[providers.current_live_agent]
+source = "agent"
+provider_name = "current-live-agent"
 
 [models.step2a_understanding]
 provider = "auxiliary_openai_compatible"
@@ -76,7 +76,6 @@ def test_load_step2a_auxiliary_config_prefers_skill_local_openai_compatible_env(
     assert set(config.prompt_paths) == set(TASKS)
 
 
-
 def test_load_step2a_auxiliary_config_prefers_auxiliary_local_toml_over_env(tmp_path, monkeypatch):
     skill_dir = tmp_path / "transcribe"
     _write_shared_skill_fixture(skill_dir)
@@ -88,7 +87,7 @@ def test_load_step2a_auxiliary_config_prefers_auxiliary_local_toml_over_env(tmp_
         """
 [auxiliary]
 base_url = "https://api.deepseek.com/v1"
-api_key = "sk-local-toml"
+api_key = "sk-toml"
 """.strip(),
         encoding="utf-8",
     )
@@ -99,41 +98,59 @@ api_key = "sk-local-toml"
 
     assert config.provider_alias == "auxiliary_openai_compatible"
     assert config.base_url == "https://api.deepseek.com/v1"
-    assert config.api_key == "sk-local-toml"
+    assert config.api_key == "sk-toml"
+    assert config.model == "deepseek-v4-flash"
 
 
-
-def test_load_step2a_auxiliary_config_falls_back_to_hermes_provider_when_generic_env_is_missing(tmp_path, monkeypatch):
+def test_load_step2a_auxiliary_config_falls_back_to_injected_current_live_agent_runtime_when_generic_env_is_missing(tmp_path, monkeypatch):
     skill_dir = tmp_path / "transcribe"
     _write_shared_skill_fixture(skill_dir)
 
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text(
-        """
-providers:
-  newapi:
-    name: deepseek-direct
-    base_url: http://127.0.0.1:3000/v1
-    key_env: NEWAPI_API_KEY
-    api_mode: codex_responses
-""".strip(),
-        encoding="utf-8",
-    )
-    (hermes_home / ".env").write_text("NEWAPI_API_KEY=sk-hermes\n", encoding="utf-8")
     monkeypatch.delenv("AUXILIARY_BASE_URL", raising=False)
     monkeypatch.delenv("AUXILIARY_API_KEY", raising=False)
-    monkeypatch.delenv("NEWAPI_API_KEY", raising=False)
+    monkeypatch.delenv("CURRENT_LIVE_AGENT_BASE_URL", raising=False)
+    monkeypatch.delenv("CURRENT_LIVE_AGENT_API_KEY", raising=False)
 
-    config = load_step2a_auxiliary_config(skill_dir=skill_dir, hermes_home=hermes_home)
+    config = load_step2a_auxiliary_config(
+        skill_dir=skill_dir,
+        agent_runtime=AgentRuntimeConfig(
+            provider_name="openclaw",
+            base_url="http://127.0.0.1:3000/v1",
+            api_key="sk-openclaw",
+            api_key_env="OPENCLAW_API_KEY",
+            api_mode="responses",
+        ),
+    )
 
-    assert config.provider_alias == "newapi"
-    assert config.source_provider_name == "deepseek-direct"
+    assert config.provider_alias == "current_live_agent"
+    assert config.source_provider_name == "current-live-agent"
     assert config.base_url == "http://127.0.0.1:3000/v1"
-    assert config.api_key_env == "NEWAPI_API_KEY"
-    assert config.api_key == "sk-hermes"
+    assert config.api_key_env == "OPENCLAW_API_KEY"
+    assert config.api_key == "sk-openclaw"
+    assert config.model == "deepseek-v4-flash"
     assert config.api_mode == "chat_completions"
 
+
+def test_load_step2a_auxiliary_config_falls_back_to_current_live_agent_env_when_runtime_is_not_injected(tmp_path, monkeypatch):
+    skill_dir = tmp_path / "transcribe"
+    _write_shared_skill_fixture(skill_dir)
+
+    monkeypatch.delenv("AUXILIARY_BASE_URL", raising=False)
+    monkeypatch.delenv("AUXILIARY_API_KEY", raising=False)
+    monkeypatch.setenv("CURRENT_LIVE_AGENT_BASE_URL", "http://127.0.0.1:9000/v1")
+    monkeypatch.setenv("CURRENT_LIVE_AGENT_API_KEY", "sk-live-agent")
+    monkeypatch.setenv("CURRENT_LIVE_AGENT_API_MODE", "responses")
+    monkeypatch.setenv("CURRENT_LIVE_AGENT_PROVIDER_NAME", "codex-cli")
+
+    config = load_step2a_auxiliary_config(skill_dir=skill_dir)
+
+    assert config.provider_alias == "current_live_agent"
+    assert config.source_provider_name == "current-live-agent"
+    assert config.base_url == "http://127.0.0.1:9000/v1"
+    assert config.api_key_env == "CURRENT_LIVE_AGENT_API_KEY"
+    assert config.api_key == "sk-live-agent"
+    assert config.model == "deepseek-v4-flash"
+    assert config.api_mode == "chat_completions"
 
 
 def test_load_prompt_text_reads_prompt_file_from_resolved_config(tmp_path):

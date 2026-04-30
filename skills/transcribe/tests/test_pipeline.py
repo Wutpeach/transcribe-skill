@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from auxiliary_config import AgentRuntimeConfig
 from contracts import (
     AlignedSegment,
     AlignedSegmentsSummary,
@@ -34,6 +35,43 @@ from drafting import Step2ADraftingResult
 
 class DummyFunASRResult(FunASRTranscribeResult):
     pass
+
+
+def _step2a_fixture_result(*, text_lines: list[str], source_mode: str, provider: str = "deepseek_direct_aux") -> Step2ADraftingResult:
+    joined = "\n".join(text_lines)
+    return Step2ADraftingResult(
+        proofread=ProofreadManuscript(
+            source_text=joined,
+            proofread_text=joined,
+            edit_summary="fixture proofreading",
+            proofread_confidence=0.95,
+            draft_ready=True,
+            drafting_warnings=[],
+        ),
+        draft=SubtitleDraft(
+            lines=[DraftLine(line_id=index, text=text, source_mode=source_mode) for index, text in enumerate(text_lines, start=1)]
+        ),
+        drafting_mode="llm-primary",
+        draft_model_provider=provider,
+        draft_model_name="deepseek-v4-flash",
+        draft_fallback_used=False,
+        draft_fallback_reason=None,
+        draft_fallback_code=None,
+        draft_attempt_count=1,
+        text_authority="llm",
+        manual_review_required=False,
+        alert_reasons=[],
+    )
+
+
+def _agent_runtime_fixture() -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        provider_name="openclaw",
+        base_url="http://127.0.0.1:3000/v1",
+        api_key_env="CURRENT_LIVE_AGENT_API_KEY",
+        api_key="sk-openclaw",
+        api_mode="chat_completions",
+    )
 
 
 def test_build_parser_accepts_replay_from_raw_without_audio_or_api_key():
@@ -185,12 +223,18 @@ def test_run_replay_from_raw_rebuilds_step2_handoff_artifacts_from_existing_raw_
         encoding="utf-8",
     )
 
-    outputs = run_replay_from_raw(
-        raw_json_path=raw_source_path,
-        run_dir=tmp_path / "replay-run",
-        manuscript_text="他造过的 S7 也讲到 HPS",
-        mode_override="manuscript-priority",
+    step2a_result = _step2a_fixture_result(
+        text_lines=["他造过的 S7", "也讲到 HPS"],
+        source_mode="manuscript-priority",
     )
+
+    with patch("pipeline.build_step2a_artifacts", return_value=step2a_result):
+        outputs = run_replay_from_raw(
+            raw_json_path=raw_source_path,
+            run_dir=tmp_path / "replay-run",
+            manuscript_text="他造过的 S7 也讲到 HPS",
+            mode_override="manuscript-priority",
+        )
 
     assert outputs.raw_json_path.exists()
     assert outputs.raw_json_path.parent == outputs.run_dir
@@ -209,6 +253,46 @@ def test_run_replay_from_raw_rebuilds_step2_handoff_artifacts_from_existing_raw_
 
     report = json.loads(outputs.report_json_path.read_text(encoding="utf-8"))
     assert report["step3_status"] in {"awaiting_agent_review", "blocked"}
+
+
+def test_run_replay_from_raw_uses_injected_agent_runtime_for_current_live_agent_fallback(tmp_path):
+    raw_source_path = tmp_path / "existing-raw.json"
+    raw_source_path.write_text(
+        json.dumps(
+            {
+                "schema": "transcribe.raw.v3",
+                "text": "他造过的s7 也讲到hps",
+                "segments": [
+                    {
+                        "id": 1,
+                        "start": 0.0,
+                        "end": 2.0,
+                        "text": "他造过的s7 也讲到hps",
+                        "words": [
+                            {"id": 1, "start": 0.0, "end": 0.8, "text": "他造过的s7", "punctuation": ""},
+                            {"id": 2, "start": 0.8, "end": 2.0, "text": "也讲到hps", "punctuation": ""},
+                        ],
+                    }
+                ],
+                "backend": "funasr-api",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    outputs = run_replay_from_raw(
+        raw_json_path=raw_source_path,
+        run_dir=tmp_path / "replay-run-runtime",
+        manuscript_text="他造过的 S7 也讲到 HPS",
+        mode_override="manuscript-priority",
+        agent_runtime=_agent_runtime_fixture(),
+    )
+
+    report = json.loads(outputs.report_json_path.read_text(encoding="utf-8"))
+    assert report["drafting_mode"] in {"llm-primary", "llm-primary-with-alerts", "agent-fallback"}
+    assert report["step3_status"] == "awaiting_agent_review"
 
 
 def test_run_minimal_pipeline_writes_required_artifacts(tmp_path):
@@ -248,7 +332,15 @@ def test_run_minimal_pipeline_writes_required_artifacts(tmp_path):
             result_url="https://result.example/output.json",
         )
 
-    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe):
+    step2a_result = _step2a_fixture_result(
+        text_lines=["他造过的 S7", "也讲到 HPS"],
+        source_mode="manuscript-priority",
+    )
+
+    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe), patch(
+        "pipeline.build_step2a_artifacts",
+        return_value=step2a_result,
+    ):
         outputs = run_minimal_pipeline(
             audio_path=audio_path,
             run_dir=tmp_path / "run",
@@ -458,9 +550,21 @@ def test_write_step3_review_artifacts_updates_report_with_finalized_metrics(tmp_
     write_step3_review_artifacts(run_dir=run_dir, finalizer_result=finalizer_result)
 
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    edited_srt = (run_dir / "edited.srt").read_text(encoding="utf-8")
+    correction_log = json.loads((run_dir / "correction_log.json").read_text(encoding="utf-8"))
+    final_delivery_audit = json.loads((run_dir / "final_delivery_audit.json").read_text(encoding="utf-8"))
     assert (run_dir / "edited.srt").exists()
     assert (run_dir / "correction_log.json").exists()
     assert (run_dir / "final_delivery_audit.json").exists()
+    assert "00:00:00,000 --> 00:00:00,800" in edited_srt
+    assert "00:00:00,800 --> 00:00:01,600" in edited_srt
+    assert correction_log["delivery_timing_smoothing"] == {
+        "applied": True,
+        "first_cue_snapped": False,
+        "gaps_filled": 0,
+    }
+    assert final_delivery_audit["timing_smoothed_count"] == 0
+    assert final_delivery_audit["first_cue_start_snapped"] is False
     assert report["step3_status"] == "adjudicated_ready"
     assert report["step3_text_authority"] == "llm"
     assert report["manual_review_required"] is False
@@ -476,6 +580,128 @@ def test_write_step3_review_artifacts_updates_report_with_finalized_metrics(tmp_
     assert report["cue_splitting"]["high_risk_count"] == 0
     assert report["split_count"] == 1
     assert report["edited_cue_count"] == 3
+    assert report["delivery_timing_smoothing"] == {
+        "count": 0,
+        "first_cue_snapped": False,
+    }
+    assert report["timing_smoothed_count"] == 0
+
+
+def test_write_step3_review_artifacts_applies_delivery_timing_smoothing_before_writing_srt(tmp_path):
+    run_dir = tmp_path / "run-step3-smoothed"
+    run_dir.mkdir()
+    report_path = run_dir / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "transcribe.report.v3",
+                "step3_status": "awaiting_agent_review",
+                "step3_text_authority": "interactive-agent",
+                "step3_alert_reasons": [],
+                "manual_review_required": False,
+                "final_delivery_status": "awaiting_agent_review",
+                "final_delivery_risk": "pending",
+                "final_delivery_reasons": [],
+                "finalizer_change_count": 0,
+                "finalizer_change_breakdown": {
+                    "alias_replacements": {"count": 0, "examples": []},
+                    "spacing_normalizations": {"count": 0, "examples": []},
+                    "punctuation_normalizations": {"count": 0, "examples": []},
+                    "duplicate_collapses": {"count": 0, "examples": []},
+                    "delivery_resegmentations": {"count": 0, "examples": []},
+                },
+                "finalizer_applied_regions": "",
+                "finalizer_mode": "agent-session-pending",
+                "finalizer_model_provider": None,
+                "finalizer_model_name": None,
+                "finalizer_fallback_used": False,
+                "finalizer_fallback_reason": None,
+                "finalizer_fallback_code": None,
+                "segmentation_stats": {"script_pass_cue_count": 2, "edited_cue_count": None},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    finalizer_result = FinalizerResult(
+        cues=[
+            SubtitleCue(index=1, start=0.4, end=0.9, text="前句"),
+            SubtitleCue(index=2, start=1.1, end=1.8, text="后句"),
+        ],
+        change_breakdown={
+            "alias_replacements": {"count": 0, "examples": []},
+            "spacing_normalizations": {"count": 0, "examples": []},
+            "punctuation_normalizations": {"count": 0, "examples": []},
+            "duplicate_collapses": {"count": 0, "examples": []},
+            "delivery_resegmentations": {"count": 0, "examples": []},
+        },
+        applied_regions=[],
+        applied_region_summary="",
+        correction_log={
+            "schema": "transcribe.correction_log.v1",
+            "cue_changes": [],
+            "cue_diffs": [],
+            "cue_splits": [],
+            "split_statistics": {
+                "total_splits": 0,
+                "token_anchored_count": 0,
+                "partial_token_anchored_count": 0,
+                "proportional_fallback_count": 0,
+                "low_confidence_split_count": 0,
+            },
+            "applied_region_summary": "",
+        },
+        delivery_audit={
+            "schema": "transcribe.final_delivery_audit.v1",
+            "status": "ready",
+            "risk": "low",
+            "checks": {"cue_count": 2, "resegment_count": 0},
+            "resegment_source": [],
+            "cue_splitting": {
+                "split_count": 0,
+                "high_risk_count": 0,
+                "max_length": 2,
+                "mean_alignment_delta_ms": 0,
+            },
+            "reasons": [],
+            "cue_diffs": [],
+        },
+        split_operations=[],
+        validation_fallback_reasons=[],
+        finalizer_mode="rules-primary",
+        finalizer_model_provider=None,
+        finalizer_model_name=None,
+        finalizer_fallback_used=False,
+        finalizer_fallback_reason=None,
+        finalizer_fallback_code=None,
+        text_authority="inherited",
+        manual_review_required=False,
+        alert_reasons=[],
+    )
+
+    write_step3_review_artifacts(run_dir=run_dir, finalizer_result=finalizer_result)
+
+    edited_srt = (run_dir / "edited.srt").read_text(encoding="utf-8")
+    correction_log = json.loads((run_dir / "correction_log.json").read_text(encoding="utf-8"))
+    final_delivery_audit = json.loads((run_dir / "final_delivery_audit.json").read_text(encoding="utf-8"))
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert "00:00:00,000 --> 00:00:01,100" in edited_srt
+    assert "00:00:01,100 --> 00:00:01,800" in edited_srt
+    assert correction_log["delivery_timing_smoothing"] == {
+        "applied": True,
+        "first_cue_snapped": True,
+        "gaps_filled": 1,
+    }
+    assert final_delivery_audit["timing_smoothed_count"] == 1
+    assert final_delivery_audit["first_cue_start_snapped"] is True
+    assert report["delivery_timing_smoothing"] == {
+        "count": 1,
+        "first_cue_snapped": True,
+    }
+    assert report["timing_smoothed_count"] == 1
+
 
 
 def test_write_step3_review_artifacts_marks_report_needs_review_when_delivery_risk_remains(tmp_path):
@@ -1035,7 +1261,15 @@ def test_run_minimal_pipeline_reports_manuscript_backed_entity_recoveries(tmp_pa
             result_url="https://result.example/output.json",
         )
 
-    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe):
+    step2a_result = _step2a_fixture_result(
+        text_lines=["广汽埃安 S", "埃安 Y现在卖得都挺好"],
+        source_mode="manuscript-priority",
+    )
+
+    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe), patch(
+        "pipeline.build_step2a_artifacts",
+        return_value=step2a_result,
+    ):
         outputs = run_minimal_pipeline(
             audio_path=audio_path,
             run_dir=tmp_path / "run-entity",
@@ -1319,7 +1553,15 @@ def test_run_minimal_pipeline_reports_agent_handoff_metadata_from_step2_outputs(
         finalizer_fallback_code=None,
     )
 
+    step2a_result = _step2a_fixture_result(
+        text_lines=["他造过的 S7", "也讲到 HPS"],
+        source_mode="manuscript-priority",
+    )
+
     with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe), patch(
+        "pipeline.build_step2a_artifacts",
+        return_value=step2a_result,
+    ), patch(
         "pipeline.finalize_cues",
         return_value=finalizer_result,
     ):
@@ -1395,7 +1637,15 @@ def test_run_minimal_pipeline_routes_dirty_manuscript_to_raw_priority(tmp_path):
             result_url="https://result.example/output.json",
         )
 
-    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe):
+    step2a_result = _step2a_fixture_result(
+        text_lines=["今天临时闲聊一点别的内容", "顺手讲两个完全无关的话题"],
+        source_mode="raw-priority",
+    )
+
+    with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe), patch(
+        "pipeline.build_step2a_artifacts",
+        return_value=step2a_result,
+    ):
         outputs = run_minimal_pipeline(
             audio_path=audio_path,
             run_dir=tmp_path / "run-dirty",
@@ -1880,7 +2130,7 @@ def test_run_minimal_pipeline_keeps_llm_authority_when_step2a_only_has_soft_aler
     assert alert_tracking["cases"][0]["code"] == "line_over_limit"
 
 
-def test_run_minimal_pipeline_reports_manual_review_when_step2a_request_fails(tmp_path):
+def test_run_minimal_pipeline_continues_to_agent_review_when_step2a_auxiliary_request_fails(tmp_path):
     audio_path = tmp_path / "sample-authority-step2a-fail.wav"
     audio_path.write_bytes(b"RIFFfake")
     raw_payload = {
@@ -1920,22 +2170,49 @@ def test_run_minimal_pipeline_reports_manual_review_when_step2a_request_fails(tm
         proofread=ProofreadManuscript(
             source_text="现在讲一下 HPS",
             proofread_text="现在讲一下 HPS",
-            edit_summary="manual review required",
-            proofread_confidence=0.0,
-            draft_ready=False,
-            drafting_warnings=["auxiliary timeout"],
+            edit_summary="agent managed fallback",
+            proofread_confidence=0.72,
+            draft_ready=True,
+            drafting_warnings=["auxiliary timeout", "bootstrap proofreading only"],
         ),
-        draft=SubtitleDraft(lines=[]),
-        drafting_mode="manual-review-required",
-        draft_model_provider=None,
+        draft=SubtitleDraft(lines=[DraftLine(line_id=1, text="现在讲一下 HPS", source_mode="manuscript-priority")]),
+        drafting_mode="agent-fallback",
+        draft_model_provider="local-helper",
         draft_model_name=None,
-        draft_fallback_used=False,
+        draft_fallback_used=True,
         draft_fallback_reason="auxiliary timeout",
         draft_fallback_code="auxiliary_request_failed",
-        draft_attempt_count=1,
-        text_authority="none",
-        manual_review_required=True,
+        draft_attempt_count=0,
+        text_authority="interactive-agent",
+        manual_review_required=False,
         alert_reasons=["auxiliary timeout"],
+    )
+    aligned_segments = [
+        AlignedSegment(
+            line_id=1,
+            text="现在讲一下 HPS",
+            start=0.0,
+            end=1.5,
+            raw_token_start_index=0,
+            raw_token_end_index=0,
+            alignment_score=0.92,
+        )
+    ]
+    aligned_summary = AlignedSegmentsSummary(
+        line_count=1,
+        mean_alignment_score=0.92,
+        low_confidence_count=0,
+        interpolated_boundary_count=0,
+        fallback_region_count=0,
+    )
+    alignment_audit = AlignmentAudit(
+        chosen_mode="manuscript-priority",
+        post_alignment_mode="manuscript-priority",
+        mean_alignment_score=0.92,
+        downgraded_regions=[],
+        rebuild_regions=[],
+        fallback_region_count=0,
+        reasons=[],
     )
 
     with patch("pipeline.run_funasr_api_for_transcribe", side_effect=fake_run_funasr_api_for_transcribe), patch(
@@ -1943,10 +2220,13 @@ def test_run_minimal_pipeline_reports_manual_review_when_step2a_request_fails(tm
         return_value=step2a_result,
     ), patch(
         "pipeline.align_draft_to_raw_tokens",
-        side_effect=AssertionError("step 2B should not run after step 2A manual review"),
+        return_value=(aligned_segments, aligned_summary),
+    ), patch(
+        "pipeline.build_alignment_audit",
+        return_value=alignment_audit,
     ), patch(
         "pipeline.finalize_cues",
-        side_effect=AssertionError("step 3 should not run after step 2A manual review"),
+        side_effect=AssertionError("pipeline should stop at agent handoff before step 3 final adjudication"),
     ):
         outputs = run_minimal_pipeline(
             audio_path=audio_path,
@@ -1958,23 +2238,27 @@ def test_run_minimal_pipeline_reports_manual_review_when_step2a_request_fails(tm
     report = json.loads(outputs.report_json_path.read_text(encoding="utf-8"))
     alert_tracking = json.loads(outputs.alert_tracking_path.read_text(encoding="utf-8"))
     proofread = json.loads(outputs.proofread_manuscript_path.read_text(encoding="utf-8"))
+    subtitle_draft = json.loads(outputs.subtitle_draft_path.read_text(encoding="utf-8"))
+    agent_review_bundle = json.loads(outputs.agent_review_bundle_path.read_text(encoding="utf-8"))
     assert proofread["proofread_text"] == "现在讲一下 HPS"
     assert outputs.edited_srt_path is None
     assert outputs.final_delivery_audit_path is None
     assert outputs.correction_log_path is None
-    assert report["drafting_mode"] == "manual-review-required"
-    assert report["step2a_text_authority"] == "none"
-    assert report["step3_text_authority"] == "none"
-    assert report["manual_review_required"] is True
-    assert report["finalizer_mode"] == "blocked"
-    assert report["step3_status"] == "blocked"
-    assert report["alert_tracking_summary"]["alert_case_count"] == 0
-    assert report["alert_tracking_summary"]["manual_review_case_count"] == 1
-    assert report["alert_tracking_summary"]["code_counts"]["auxiliary_request_failed"] == 1
-    assert alert_tracking["cases"][0]["stage"] == "step2a"
-    assert alert_tracking["cases"][0]["kind"] == "manual_review"
-    assert report["final_delivery_status"] == "blocked"
-    assert "auxiliary timeout" in report["final_delivery_reasons"]
+    assert report["drafting_mode"] == "agent-fallback"
+    assert report["step2a_text_authority"] == "interactive-agent"
+    assert report["step3_text_authority"] == "interactive-agent"
+    assert report["manual_review_required"] is False
+    assert report["draft_model_provider"] == "local-helper"
+    assert report["draft_model_name"] is None
+    assert report["draft_fallback_used"] is True
+    assert report["draft_fallback_reason"] == "auxiliary timeout"
+    assert report["draft_fallback_code"] == "auxiliary_request_failed"
+    assert report["step3_status"] == "awaiting_agent_review"
+    assert report["final_delivery_status"] == "awaiting_agent_review"
+    assert report["step2a_alert_reasons"] == ["auxiliary timeout"]
+    assert subtitle_draft["lines"]
+    assert agent_review_bundle["step3_execution_mode"] == "agent-session"
+    assert alert_tracking["manual_review_case_count"] == 0
 
 
 def test_run_minimal_pipeline_stops_at_agent_handoff_after_step2_success(tmp_path):

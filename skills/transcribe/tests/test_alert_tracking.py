@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from alert_tracking import build_alert_tracking
-from contracts import DraftLine, ProofreadManuscript, SubtitleCue, SubtitleDraft
+from contracts import DraftLine, ProofreadManuscript, SubtitleDraft
 from drafting import Step2ADraftingResult
 from finalizer import FinalizerResult
 

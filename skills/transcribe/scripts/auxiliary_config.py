@@ -16,6 +16,11 @@ except ImportError:  # pragma: no cover
 DEFAULT_AUXILIARY_BASE_URL_ENV = "AUXILIARY_BASE_URL"
 DEFAULT_AUXILIARY_API_KEY_ENV = "AUXILIARY_API_KEY"
 DEFAULT_AUXILIARY_API_MODE = "chat_completions"
+DEFAULT_CURRENT_AGENT_PROVIDER_NAME = "current-live-agent"
+DEFAULT_CURRENT_AGENT_BASE_URL_ENV = "CURRENT_LIVE_AGENT_BASE_URL"
+DEFAULT_CURRENT_AGENT_API_KEY_ENV = "CURRENT_LIVE_AGENT_API_KEY"
+DEFAULT_CURRENT_AGENT_API_MODE_ENV = "CURRENT_LIVE_AGENT_API_MODE"
+DEFAULT_CURRENT_AGENT_PROVIDER_NAME_ENV = "CURRENT_LIVE_AGENT_PROVIDER_NAME"
 
 
 @dataclass
@@ -33,6 +38,15 @@ class Step2AAuxiliaryConfig:
     timeout: int
     prompt_dir: Path
     prompt_paths: dict[str, Path]
+
+
+@dataclass
+class AgentRuntimeConfig:
+    provider_name: str = DEFAULT_CURRENT_AGENT_PROVIDER_NAME
+    base_url: str = ""
+    api_key_env: str = DEFAULT_CURRENT_AGENT_API_KEY_ENV
+    api_key: str = ""
+    api_mode: str = DEFAULT_AUXILIARY_API_MODE
 
 
 class AuxiliaryConfigError(RuntimeError):
@@ -130,6 +144,17 @@ def _resolve_env(name: str, *sources: dict[str, str]) -> str:
     return ""
 
 
+def _runtime_from_env(*, local_env: dict[str, str], env_map: dict[str, str]) -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        provider_name=_resolve_env(DEFAULT_CURRENT_AGENT_PROVIDER_NAME_ENV, local_env, env_map)
+        or DEFAULT_CURRENT_AGENT_PROVIDER_NAME,
+        base_url=_resolve_env(DEFAULT_CURRENT_AGENT_BASE_URL_ENV, local_env, env_map),
+        api_key_env=DEFAULT_CURRENT_AGENT_API_KEY_ENV,
+        api_key=_resolve_env(DEFAULT_CURRENT_AGENT_API_KEY_ENV, local_env, env_map),
+        api_mode=_resolve_env(DEFAULT_CURRENT_AGENT_API_MODE_ENV, local_env, env_map) or DEFAULT_AUXILIARY_API_MODE,
+    )
+
+
 def _resolve_provider(
     *,
     provider_ref: str,
@@ -137,11 +162,12 @@ def _resolve_provider(
     model_cfg: dict,
     skill_dir: Path,
     hermes_home: Path,
+    agent_runtime: AgentRuntimeConfig | None,
     local_env: dict[str, str],
     env_map: dict[str, str],
     local_aux_cfg: dict,
     seen: set[str],
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     if provider_ref in seen:
         raise AuxiliaryConfigError(f"Provider fallback loop detected for `{provider_ref}`")
     seen.add(provider_ref)
@@ -171,6 +197,7 @@ def _resolve_provider(
                 model_cfg=model_cfg,
                 skill_dir=skill_dir,
                 hermes_home=hermes_home,
+                agent_runtime=agent_runtime,
                 local_env=local_env,
                 env_map=env_map,
                 local_aux_cfg=local_aux_cfg,
@@ -182,31 +209,69 @@ def _resolve_provider(
             missing.append(base_url_env)
         if not api_key:
             missing.append(api_key_env)
-        joined = ", ".join(missing) if missing else provider_ref
-        raise AuxiliaryConfigError(f"Missing auxiliary configuration: {joined}")
+        raise AuxiliaryConfigError(f"Missing auxiliary configuration: {', '.join(missing)}")
+
+    if source == "agent":
+        runtime = agent_runtime or _runtime_from_env(local_env=local_env, env_map=env_map)
+        provider_name = (
+            _non_empty(provider_cfg.get("provider_name"))
+            or _non_empty(runtime.provider_name)
+            or DEFAULT_CURRENT_AGENT_PROVIDER_NAME
+        )
+        api_mode = (
+            _non_empty(model_cfg.get("api_mode") or provider_cfg.get("api_mode"))
+            or _non_empty(runtime.api_mode)
+            or DEFAULT_AUXILIARY_API_MODE
+        )
+        base_url = (
+            _non_empty(provider_cfg.get("base_url"))
+            or _non_empty(runtime.base_url)
+            or _resolve_env(DEFAULT_CURRENT_AGENT_BASE_URL_ENV, local_env, env_map)
+        )
+        inline_api_key = _non_empty(provider_cfg.get("api_key")) or _non_empty(runtime.api_key)
+        api_key_env = _non_empty(provider_cfg.get("api_key_env")) or _non_empty(runtime.api_key_env) or DEFAULT_CURRENT_AGENT_API_KEY_ENV
+        api_key = inline_api_key or _resolve_env(api_key_env, local_env, env_map)
+
+        if base_url and api_key:
+            return provider_ref, provider_name, api_mode, base_url, api_key_env, api_key
+
+        missing = []
+        if not base_url:
+            missing.append(DEFAULT_CURRENT_AGENT_BASE_URL_ENV)
+        if not api_key:
+            missing.append(api_key_env)
+        raise AuxiliaryConfigError("Missing auxiliary configuration from current live agent: " + ", ".join(missing))
 
     if source == "hermes":
         source_provider_alias = _non_empty(provider_cfg.get("provider_alias"))
         if not source_provider_alias:
             raise AuxiliaryConfigError(f"Provider `{provider_ref}` is missing provider_alias")
 
-        hermes_cfg = _read_yaml(_require_file(hermes_home / "config.yaml", "Hermes config"))
-        hermes_env = _read_dotenv(hermes_home / ".env")
-        hermes_provider = ((hermes_cfg.get("providers") or {}).get(source_provider_alias)) or {}
-        if not hermes_provider:
-            raise AuxiliaryConfigError(f"Hermes provider `{source_provider_alias}` not found in {hermes_home / 'config.yaml'}")
+        host_cfg = _read_yaml(_require_file(hermes_home / "config.yaml", "host agent config"))
+        host_env = _read_dotenv(hermes_home / ".env")
+        host_provider = ((host_cfg.get("providers") or {}).get(source_provider_alias)) or {}
+        if not host_provider:
+            raise AuxiliaryConfigError(
+                f"Host-managed provider `{source_provider_alias}` not found in {hermes_home / 'config.yaml'}"
+            )
 
-        api_key_env = _non_empty(hermes_provider.get("key_env"))
-        api_key = _resolve_env(api_key_env, local_env, env_map, hermes_env) if api_key_env else ""
-        api_mode = _non_empty(model_cfg.get("api_mode") or hermes_provider.get("api_mode")) or DEFAULT_AUXILIARY_API_MODE
-        base_url = _non_empty(hermes_provider.get("base_url"))
-        provider_name = _non_empty(hermes_provider.get("name")) or source_provider_alias
+        api_key_env = _non_empty(host_provider.get("key_env"))
+        api_key = _resolve_env(api_key_env, local_env, env_map, host_env) if api_key_env else ""
+        api_mode = _non_empty(model_cfg.get("api_mode") or host_provider.get("api_mode")) or DEFAULT_AUXILIARY_API_MODE
+        base_url = _non_empty(host_provider.get("base_url"))
+        provider_name = _non_empty(host_provider.get("name")) or source_provider_alias
         return source_provider_alias, provider_name, api_mode, base_url, api_key_env, api_key
 
     raise AuxiliaryConfigError(f"Unsupported provider source for `{provider_ref}`")
 
 
-def _load_step_auxiliary_config(*, skill_dir: Path, stage_name: str, hermes_home: Path | None = None) -> Step2AAuxiliaryConfig:
+def _load_step_auxiliary_config(
+    *,
+    skill_dir: Path,
+    stage_name: str,
+    hermes_home: Path | None = None,
+    agent_runtime: AgentRuntimeConfig | None = None,
+) -> Step2AAuxiliaryConfig:
     skill_dir = Path(skill_dir).expanduser().resolve()
     hermes_home = Path(hermes_home or Path("~/.hermes").expanduser()).expanduser().resolve()
     env_map = dict(os.environ)
@@ -234,6 +299,7 @@ def _load_step_auxiliary_config(*, skill_dir: Path, stage_name: str, hermes_home
         model_cfg=model_cfg,
         skill_dir=skill_dir,
         hermes_home=hermes_home,
+        agent_runtime=agent_runtime,
         local_env=local_env,
         env_map=env_map,
         local_aux_cfg=local_aux_cfg,
@@ -262,8 +328,18 @@ def _load_step_auxiliary_config(*, skill_dir: Path, stage_name: str, hermes_home
     )
 
 
-def load_step2a_auxiliary_config(*, skill_dir: Path, hermes_home: Path | None = None) -> Step2AAuxiliaryConfig:
-    return _load_step_auxiliary_config(skill_dir=skill_dir, stage_name="step2a", hermes_home=hermes_home)
+def load_step2a_auxiliary_config(
+    *,
+    skill_dir: Path,
+    hermes_home: Path | None = None,
+    agent_runtime: AgentRuntimeConfig | None = None,
+) -> Step2AAuxiliaryConfig:
+    return _load_step_auxiliary_config(
+        skill_dir=skill_dir,
+        stage_name="step2a",
+        hermes_home=hermes_home,
+        agent_runtime=agent_runtime,
+    )
 
 
 def load_prompt_text(config: Step2AAuxiliaryConfig, task: str) -> str:

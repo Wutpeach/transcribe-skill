@@ -2,11 +2,13 @@ import io
 import json
 import sys
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from auxiliary_config import AgentRuntimeConfig
 from auxiliary_drafting import AuxiliaryDraftingError, request_auxiliary_manuscript_draft
 
 
@@ -17,6 +19,16 @@ class DummyResponse(io.BytesIO):
     def __exit__(self, exc_type, exc, tb):
         self.close()
         return False
+
+
+def _runtime() -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        provider_name="openclaw",
+        base_url="http://127.0.0.1:3000/v1",
+        api_key="sk-openclaw",
+        api_key_env="OPENCLAW_API_KEY",
+        api_mode="chat_completions",
+    )
 
 
 def _write_step2a_auxiliary_fixture(skill_dir: Path, hermes_home: Path) -> None:
@@ -69,6 +81,116 @@ providers:
         encoding="utf-8",
     )
     (hermes_home / ".env").write_text("NEWAPI_API_KEY=***", encoding="utf-8")
+
+
+def _write_runtime_neutral_step2a_auxiliary_fixture(skill_dir: Path) -> None:
+    (skill_dir / "config").mkdir(parents=True)
+    (skill_dir / "prompts" / "understanding").mkdir(parents=True)
+    (skill_dir / "config" / "models.toml").write_text(
+        """
+[providers.auxiliary_openai_compatible]
+source = "openai_compatible"
+provider_name = "openai-compatible"
+base_url_env = "AUXILIARY_BASE_URL"
+api_key_env = "AUXILIARY_API_KEY"
+api_mode = "chat_completions"
+fallback_provider = "current_live_agent"
+
+[providers.current_live_agent]
+source = "agent"
+provider_name = "current-live-agent"
+
+[models.step2a_understanding]
+provider = "auxiliary_openai_compatible"
+model = "deepseek-v4-flash"
+api_mode = "chat_completions"
+temperature = 0.2
+max_tokens = 32768
+timeout = 180
+""".strip(),
+        encoding="utf-8",
+    )
+    (skill_dir / "config" / "transcribe.toml").write_text(
+        """
+[step2a.auxiliary_model]
+enabled = true
+model_ref = "step2a_understanding"
+prompt_dir = "prompts/understanding"
+tasks = ["manuscript_understanding", "deduplication"]
+""".strip(),
+        encoding="utf-8",
+    )
+    (skill_dir / "prompts" / "understanding" / "manuscript_understanding.md").write_text(
+        "understanding prompt",
+        encoding="utf-8",
+    )
+    (skill_dir / "prompts" / "understanding" / "deduplication.md").write_text(
+        "deduplication prompt",
+        encoding="utf-8",
+    )
+
+
+def test_request_auxiliary_manuscript_draft_uses_injected_agent_runtime_for_current_live_agent_fallback(tmp_path):
+    skill_dir = tmp_path / "transcribe"
+    _write_runtime_neutral_step2a_auxiliary_fixture(skill_dir)
+
+    captured: dict[str, object] = {}
+
+    def fake_urlopen(req, timeout=0):
+        captured["timeout"] = timeout
+        captured["url"] = req.full_url
+        captured["authorization"] = req.headers["Authorization"]
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "proofread_text": "今天我们来聊 FunASR",
+                                "subtitle_lines": ["今天我们来聊 FunASR"],
+                                "proofread_confidence": 0.97,
+                                "semantic_integrity": "high",
+                                "glossary_safe": True,
+                                "drafting_warnings": [],
+                                "draft_notes": ["llm semantic draft"],
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        }
+        return DummyResponse(json.dumps(payload).encode("utf-8"))
+
+    request_auxiliary_manuscript_draft(
+        raw_payload={"text": "今天我们来聊funasr。", "segments": []},
+        manuscript_text="今天我们来聊 FunASR。",
+        mode="manuscript-priority",
+        skill_dir=skill_dir,
+        agent_runtime=_runtime(),
+        urlopen=fake_urlopen,
+    )
+
+    assert captured["timeout"] == 180
+    assert captured["url"] == "http://127.0.0.1:3000/v1/chat/completions"
+    assert captured["authorization"] == "Bearer sk-openclaw"
+
+
+def test_request_auxiliary_manuscript_draft_raises_auxiliary_error_after_transport_failures(tmp_path):
+    skill_dir = tmp_path / "transcribe"
+    _write_runtime_neutral_step2a_auxiliary_fixture(skill_dir)
+
+    with pytest.raises(AuxiliaryDraftingError, match="Auxiliary drafting failed") as exc_info:
+        request_auxiliary_manuscript_draft(
+            raw_payload={"text": "今天我们来聊funasr。", "segments": []},
+            manuscript_text="今天我们来聊 FunASR。",
+            mode="manuscript-priority",
+            skill_dir=skill_dir,
+            agent_runtime=_runtime(),
+            urlopen=lambda req, timeout=0: (_ for _ in ()).throw(URLError("timeout")),
+        )
+
+    assert exc_info.value.code == "auxiliary_request_failed"
 
 
 def test_request_auxiliary_manuscript_draft_sends_deepseek_v4_thinking_json_request(tmp_path):

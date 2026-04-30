@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from auxiliary_config import AgentRuntimeConfig
 from alert_tracking import build_alert_tracking, write_alert_tracking
 from alignment import align_draft_to_raw_tokens, aligned_segments_to_cues, write_aligned_segments
 from audit import build_alignment_audit, write_alignment_audit
@@ -22,11 +24,12 @@ from drafting import build_step2a_artifacts, write_proofread_manuscript, write_s
 from finalizer import (
     FinalizerResult,
     build_agent_review_bundle,
-    finalize_cues,
+    finalize_cues,  # noqa: F401 - imported for pipeline-level patching in tests and live Step 3 wiring surface
     write_agent_review_bundle,
     write_correction_log,
     write_final_delivery_audit,
 )
+from finalizer_audit import apply_delivery_timing_smoothing
 from funasr_api import FunASRApiConfig, FunASRTranscribeResult, run_funasr_api_for_transcribe
 from funasr_config import resolve_funasr_config
 from glossary import build_run_glossary, find_suspicious_glossary_terms, write_run_glossary
@@ -53,6 +56,20 @@ class PipelineConfig:
     funasr_base_http_api_url: str = "https://dashscope.aliyuncs.com/api/v1"
     funasr_language_hints: list[str] | None = None
     mode_override: str | None = None
+
+
+def _resolve_agent_runtime_from_env() -> AgentRuntimeConfig | None:
+    base_url = os.environ.get("CURRENT_LIVE_AGENT_BASE_URL", "").strip()
+    api_key = os.environ.get("CURRENT_LIVE_AGENT_API_KEY", "").strip()
+    if not (base_url and api_key):
+        return None
+    return AgentRuntimeConfig(
+        provider_name=os.environ.get("CURRENT_LIVE_AGENT_PROVIDER_NAME", "").strip() or "current-live-agent",
+        base_url=base_url,
+        api_key_env="CURRENT_LIVE_AGENT_API_KEY",
+        api_key=api_key,
+        api_mode=os.environ.get("CURRENT_LIVE_AGENT_API_MODE", "").strip() or "chat_completions",
+    )
 
 
 def _load_text(path: Path | None) -> str | None:
@@ -98,10 +115,36 @@ def write_step3_review_artifacts(*, run_dir: Path, finalizer_result: FinalizerRe
     correction_log_path = run_dir / "correction_log.json"
     final_delivery_audit_path = run_dir / "final_delivery_audit.json"
 
-    write_cues_to_srt(finalizer_result.cues, edited_srt_path)
-    write_correction_log(finalizer_result.correction_log, correction_log_path)
-    write_final_delivery_audit(finalizer_result.delivery_audit, final_delivery_audit_path)
-    update_report_for_step3_review(report_path=report_path, finalizer_result=finalizer_result)
+    smoothed_cues, smoothing_metadata = apply_delivery_timing_smoothing(finalizer_result.cues)
+    correction_log = dict(finalizer_result.correction_log)
+    correction_log["delivery_timing_smoothing"] = dict(smoothing_metadata)
+    delivery_audit = dict(finalizer_result.delivery_audit)
+    delivery_audit["timing_smoothed_count"] = int(smoothing_metadata.get("gaps_filled") or 0)
+    delivery_audit["first_cue_start_snapped"] = bool(smoothing_metadata.get("first_cue_snapped"))
+    smoothed_result = FinalizerResult(
+        cues=smoothed_cues,
+        change_breakdown=finalizer_result.change_breakdown,
+        applied_regions=finalizer_result.applied_regions,
+        applied_region_summary=finalizer_result.applied_region_summary,
+        correction_log=correction_log,
+        delivery_audit=delivery_audit,
+        split_operations=finalizer_result.split_operations,
+        validation_fallback_reasons=finalizer_result.validation_fallback_reasons,
+        finalizer_mode=finalizer_result.finalizer_mode,
+        finalizer_model_provider=finalizer_result.finalizer_model_provider,
+        finalizer_model_name=finalizer_result.finalizer_model_name,
+        finalizer_fallback_used=finalizer_result.finalizer_fallback_used,
+        finalizer_fallback_reason=finalizer_result.finalizer_fallback_reason,
+        finalizer_fallback_code=finalizer_result.finalizer_fallback_code,
+        text_authority=finalizer_result.text_authority,
+        manual_review_required=finalizer_result.manual_review_required,
+        alert_reasons=finalizer_result.alert_reasons,
+    )
+
+    write_cues_to_srt(smoothed_result.cues, edited_srt_path)
+    write_correction_log(smoothed_result.correction_log, correction_log_path)
+    write_final_delivery_audit(smoothed_result.delivery_audit, final_delivery_audit_path)
+    update_report_for_step3_review(report_path=report_path, finalizer_result=smoothed_result)
 
 
 def _run_pipeline_from_raw_payload(
@@ -112,6 +155,7 @@ def _run_pipeline_from_raw_payload(
     run_dir: Path,
     manuscript_text: str | None,
     mode_override: str | None,
+    agent_runtime: AgentRuntimeConfig | None = None,
 ) -> PipelineOutputs:
     input_preflight = build_input_preflight(
         raw_payload=raw_payload,
@@ -130,7 +174,11 @@ def _run_pipeline_from_raw_payload(
     mode_decision_path = run_dir / "mode_decision.json"
     write_mode_decision(mode_decision, mode_decision_path)
 
-    glossary = build_run_glossary(raw_payload=raw_payload, manuscript_text=manuscript_text)
+    glossary = build_run_glossary(
+        raw_payload=raw_payload,
+        manuscript_text=manuscript_text,
+        agent_runtime=agent_runtime,
+    )
     run_glossary_path = run_dir / "run_glossary.json"
     write_run_glossary(glossary, run_glossary_path)
 
@@ -139,6 +187,7 @@ def _run_pipeline_from_raw_payload(
         manuscript_text=manuscript_text,
         mode=mode_decision.mode,
         glossary=glossary,
+        agent_runtime=agent_runtime,
     )
     proofread_manuscript = step2a_result.proofread
     proofread_manuscript_path = run_dir / "proofread_manuscript.json"
@@ -372,6 +421,7 @@ def _run_pipeline_from_raw_payload(
 
 def run_minimal_pipeline(*, audio_path: Path, run_dir: Path, manuscript_text: str | None, config: PipelineConfig) -> PipelineOutputs:
     run_dir.mkdir(parents=True, exist_ok=True)
+    agent_runtime = _resolve_agent_runtime_from_env()
 
     funasr_result: FunASRTranscribeResult = run_funasr_api_for_transcribe(
         local_audio_path=audio_path,
@@ -392,6 +442,7 @@ def run_minimal_pipeline(*, audio_path: Path, run_dir: Path, manuscript_text: st
         run_dir=run_dir,
         manuscript_text=manuscript_text,
         mode_override=config.mode_override,
+        agent_runtime=agent_runtime,
     )
 
 
@@ -401,6 +452,7 @@ def run_replay_from_raw(
     run_dir: Path,
     manuscript_text: str | None,
     mode_override: str | None = None,
+    agent_runtime: AgentRuntimeConfig | None = None,
 ) -> PipelineOutputs:
     run_dir.mkdir(parents=True, exist_ok=True)
     source_raw_json_path = raw_json_path.expanduser().resolve()
@@ -415,6 +467,7 @@ def run_replay_from_raw(
         run_dir=run_dir,
         manuscript_text=manuscript_text,
         mode_override=mode_override,
+        agent_runtime=agent_runtime,
     )
 
 

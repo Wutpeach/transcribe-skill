@@ -1,11 +1,14 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+from auxiliary_drafting import AuxiliaryDraftingError
 from drafting import Step2ADraftingResult, build_proofread_manuscript, build_step2a_artifacts, build_subtitle_draft
 from glossary import build_run_glossary
-from contracts import DraftLine, ProofreadManuscript, RunGlossary, SubtitleDraft
+from contracts import ProofreadManuscript, RunGlossary
 
 
 RAW_PAYLOAD = {
@@ -461,12 +464,12 @@ def test_build_step2a_artifacts_prefers_auxiliary_llm_in_raw_priority_mode_when_
 
 
 
-def test_build_step2a_artifacts_marks_manual_review_instead_of_bootstrap_when_auxiliary_draft_fails(monkeypatch):
+def test_build_step2a_artifacts_falls_back_to_agent_managed_step2_outputs_when_auxiliary_draft_fails(monkeypatch):
     manuscript_text = "今天我们来聊 FunASR。\n还看看埃安 S。"
     glossary = build_run_glossary(raw_payload=RAW_PAYLOAD, manuscript_text=manuscript_text)
 
     def fake_request_auxiliary_manuscript_draft(**kwargs):
-        raise RuntimeError("auxiliary timeout")
+        raise AuxiliaryDraftingError("auxiliary timeout", code="auxiliary_request_failed", attempt_count=2)
 
     monkeypatch.setattr("drafting.request_auxiliary_manuscript_draft", fake_request_auxiliary_manuscript_draft)
 
@@ -477,18 +480,57 @@ def test_build_step2a_artifacts_marks_manual_review_instead_of_bootstrap_when_au
         glossary=glossary,
     )
 
-    assert result.drafting_mode == "manual-review-required"
-    assert result.draft_model_provider is None
+    assert result.drafting_mode == "agent-fallback"
+    assert result.draft_model_provider == "local-helper"
     assert result.draft_model_name is None
-    assert result.draft_fallback_used is False
+    assert result.draft_fallback_used is True
     assert result.draft_fallback_reason == "auxiliary timeout"
     assert result.draft_fallback_code == "auxiliary_request_failed"
-    assert result.draft_attempt_count == 0
-    assert result.manual_review_required is True
-    assert result.draft.lines == []
-    assert result.proofread.draft_ready is False
-    assert result.proofread.edit_summary == "manual review required"
+    assert result.draft_attempt_count == 2
+    assert result.manual_review_required is False
+    assert result.text_authority == "interactive-agent"
+    assert result.proofread.draft_ready is True
+    assert result.proofread.edit_summary == "agent managed fallback"
+    assert result.draft.lines
     assert result.alert_reasons == ["auxiliary timeout"]
+
+
+def test_build_step2a_artifacts_preserves_non_request_failure_codes_in_agent_fallback(monkeypatch):
+    manuscript_text = "今天我们来聊 FunASR。\n还看看埃安 S。"
+    glossary = build_run_glossary(raw_payload=RAW_PAYLOAD, manuscript_text=manuscript_text)
+
+    def fake_request_auxiliary_manuscript_draft(**kwargs):
+        raise AuxiliaryDraftingError("tail drift detected", code="auxiliary_tail_drift", attempt_count=1)
+
+    monkeypatch.setattr("drafting.request_auxiliary_manuscript_draft", fake_request_auxiliary_manuscript_draft)
+
+    result = build_step2a_artifacts(
+        raw_payload=RAW_PAYLOAD,
+        manuscript_text=manuscript_text,
+        mode="manuscript-priority",
+        glossary=glossary,
+    )
+
+    assert result.drafting_mode == "agent-fallback"
+    assert result.draft_fallback_code == "auxiliary_tail_drift"
+    assert result.draft_attempt_count == 1
+
+
+    manuscript_text = "今天我们来聊 FunASR。\n还看看埃安 S。"
+    glossary = build_run_glossary(raw_payload=RAW_PAYLOAD, manuscript_text=manuscript_text)
+
+    def fake_request_auxiliary_manuscript_draft(**kwargs):
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr("drafting.request_auxiliary_manuscript_draft", fake_request_auxiliary_manuscript_draft)
+
+    with pytest.raises(RuntimeError, match="unexpected bug"):
+        build_step2a_artifacts(
+            raw_payload=RAW_PAYLOAD,
+            manuscript_text=manuscript_text,
+            mode="manuscript-priority",
+            glossary=glossary,
+        )
 
 
 

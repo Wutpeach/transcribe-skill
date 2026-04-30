@@ -5,6 +5,7 @@ import logging
 import re
 from pathlib import Path
 
+from auxiliary_config import AgentRuntimeConfig
 from auxiliary_glossary import AuxiliaryCorrection, request_auxiliary_glossary_corrections
 from contracts import GlossaryEntry, RunGlossary
 
@@ -173,7 +174,12 @@ def _merge_auxiliary_corrections(*, terms: list[GlossaryEntry], corrections: lis
     return merged
 
 
-def build_run_glossary(*, raw_payload: dict, manuscript_text: str | None) -> RunGlossary:
+def build_run_glossary(
+    *,
+    raw_payload: dict,
+    manuscript_text: str | None,
+    agent_runtime: AgentRuntimeConfig | None = None,
+) -> RunGlossary:
     if not manuscript_text or not manuscript_text.strip():
         return RunGlossary(terms=[], source="empty")
 
@@ -198,6 +204,7 @@ def build_run_glossary(*, raw_payload: dict, manuscript_text: str | None) -> Run
             raw_payload=raw_payload,
             manuscript_text=manuscript_text,
             skill_dir=Path(__file__).resolve().parents[1],
+            agent_runtime=agent_runtime,
         )
     except Exception as exc:
         _LOGGER.warning("Step 2A auxiliary glossary corrections unavailable: %s", exc)
