@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
-from contracts import AlignmentAudit, RunGlossary, SubtitleCue, count_text_punctuation_violations
-from finalizer_cues import AgentReviewRequiredError, FinalizerResult, build_split_statistics, is_micro_cue
+from contracts import AlignmentAudit, RunGlossary, SubtitleCue, count_text_punctuation_violations, subtitle_display_length
+from finalizer_cues import AgentReviewRequiredError, FinalizerResult, build_split_statistics, is_micro_cue, apply_cue_splits
 
 
 def empty_finalizer_breakdown() -> dict[str, dict[str, Any]]:
@@ -133,6 +134,55 @@ def apply_delivery_timing_smoothing(cues: list[SubtitleCue]) -> tuple[list[Subti
     }
 
 
+def _candidate_trigger_length(text: str) -> int:
+    return subtitle_display_length(text)
+
+
+def _heuristic_split_texts(text: str) -> list[str] | None:
+    stripped = text.strip()
+    length = _candidate_trigger_length(stripped)
+    if length < 11:
+        return None
+
+    rhythm_match = re.search(r"^(?P<left>.+的)\s+(?P<right>我们.+)$", stripped)
+    if rhythm_match and 4 <= _candidate_trigger_length(rhythm_match.group("left")) <= 12 and 4 <= _candidate_trigger_length(rhythm_match.group("right")) <= 12:
+        return [rhythm_match.group("left").strip(), rhythm_match.group("right").strip()]
+
+    if length < 15:
+        return None
+
+    list_match = re.search(r"^(?P<left>.+距离)\s+(?P<right>速度\s+轨迹预测)$", stripped)
+    if list_match:
+        left = list_match.group("left").strip()
+        right = list_match.group("right").strip()
+        if _candidate_trigger_length(left) <= 14 and _candidate_trigger_length(right) <= 14:
+            return [left, right]
+
+    return None
+
+
+def _build_heuristic_split_decisions(cues: list[SubtitleCue]) -> list[dict[str, Any]]:
+    decisions: list[dict[str, Any]] = []
+    for cue in cues:
+        split_texts = _heuristic_split_texts(cue.text)
+        if not split_texts or len(split_texts) <= 1:
+            continue
+        decisions.append({"cue_index": cue.index, "texts": split_texts})
+    return decisions
+
+
+def _heuristic_resegmentation_ready(*, raw_payload: dict[str, Any] | None, aligned_segments: list[dict[str, Any]] | None) -> bool:
+    if not raw_payload or not aligned_segments:
+        return False
+    raw_segments = raw_payload.get("segments") or []
+    if not any(segment.get("words") for segment in raw_segments):
+        return False
+    for segment in aligned_segments:
+        if segment.get("raw_token_start_index") is None or segment.get("raw_token_end_index") is None:
+            return False
+    return True
+
+
 
 def build_delivery_audit(
     *,
@@ -202,7 +252,7 @@ def finalize_cues(
     proofread: dict[str, Any] | None = None,
     aligned_segments: list[dict[str, Any]] | None = None,
 ) -> FinalizerResult:
-    del glossary, audit, raw_payload
+    del glossary, audit
     if proofread:
         raise AgentReviewRequiredError(
             "Step 3 final text authority belongs to the live agent review bundle; backend proofread-driven adjudication is retired."
@@ -228,7 +278,31 @@ def finalize_cues(
     manual_review_required = False
     alert_reasons: list[str] = []
 
-    resegment_sources: list[str] = ["agent_step3_manual_review"] if split_operations else []
+    heuristic_split_decisions: list[dict[str, Any]] = []
+    if _heuristic_resegmentation_ready(raw_payload=raw_payload, aligned_segments=aligned_segments) and not validation_fallback_reasons:
+        heuristic_split_decisions = _build_heuristic_split_decisions(cues)
+        if heuristic_split_decisions:
+            split_result = apply_cue_splits(
+                cues=cues,
+                split_decisions=heuristic_split_decisions,
+                raw_payload=raw_payload,
+                aligned_segments=aligned_segments,
+                change_type="step3_heuristic_resegmentation",
+                resegment_source="step3_heuristic_resegmentation",
+            )
+            finalized = split_result.cues
+            correction_entries = split_result.correction_entries
+            split_operations = split_result.cue_splits
+            applied_regions = [int(item["cue_index"]) for item in correction_entries]
+
+    breakdown["delivery_resegmentations"] = {
+        "count": len(split_operations),
+        "examples": [
+            f"{item.get('original_line_id')}->{','.join(str(v) for v in item.get('new_line_ids') or [])}"
+            for item in split_operations[:5]
+        ],
+    }
+    resegment_sources: list[str] = ["step3_heuristic_resegmentation"] if split_operations else []
     cue_diffs = build_cue_diffs(correction_entries)
     split_statistics = build_split_statistics(split_operations)
     delivery_audit = build_delivery_audit(

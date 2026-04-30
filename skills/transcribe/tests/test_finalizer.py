@@ -154,6 +154,205 @@ def test_finalize_cues_rules_primary_does_not_merge_micro_cues_even_with_warning
     assert finalized.correction_log["cue_changes"] == []
 
 
+def test_finalize_cues_heuristically_splits_rhythm_boundary_cue_before_writeback():
+    glossary = RunGlossary(terms=[])
+    cues = [
+        SubtitleCue(index=1, start=10.0, end=12.0, text="说完云端的 我们再来看看"),
+    ]
+    raw_payload = {
+        "segments": [
+            {
+                "id": 1,
+                "start": 10.0,
+                "end": 12.0,
+                "text": "说完云端的我们再来看看",
+                "words": [
+                    {"id": 1, "text": "说完", "start": 10.0, "end": 10.35, "punctuation": ""},
+                    {"id": 2, "text": "云端", "start": 10.35, "end": 10.8, "punctuation": ""},
+                    {"id": 3, "text": "的", "start": 10.8, "end": 10.95, "punctuation": ""},
+                    {"id": 4, "text": "我们", "start": 10.95, "end": 11.3, "punctuation": ""},
+                    {"id": 5, "text": "再来", "start": 11.3, "end": 11.65, "punctuation": ""},
+                    {"id": 6, "text": "看看", "start": 11.65, "end": 12.0, "punctuation": ""},
+                ],
+            }
+        ]
+    }
+
+    finalized = finalize_cues(
+        cues=cues,
+        glossary=glossary,
+        raw_payload=raw_payload,
+        aligned_segments=[
+            {
+                "line_id": 1,
+                "text": "说完云端的 我们再来看看",
+                "start": 10.0,
+                "end": 12.0,
+                "raw_token_start_index": 0,
+                "raw_token_end_index": 5,
+                "alignment_score": 1.0,
+                "warnings": [],
+            }
+        ],
+    )
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in finalized.cues] == [
+        (1, 10.0, 10.95, "说完云端的"),
+        (2, 10.95, 12.0, "我们再来看看"),
+    ]
+    assert finalized.change_breakdown["delivery_resegmentations"]["count"] == 1
+    assert finalized.change_breakdown["delivery_resegmentations"]["examples"] == ["1->1,2"]
+    assert finalized.applied_region_summary == "1"
+    assert finalized.delivery_audit["checks"]["resegment_count"] == 1
+    assert finalized.delivery_audit["resegment_source"] == ["step3_heuristic_resegmentation"]
+    assert finalized.delivery_audit["cue_splitting"]["split_count"] == 1
+    assert finalized.correction_log["cue_changes"][0]["after_cues"] == [
+        {"cue_index": 1, "text": "说完云端的"},
+        {"cue_index": 2, "text": "我们再来看看"},
+    ]
+    assert finalized.correction_log["cue_changes"][0]["change_types"] == ["step3_heuristic_resegmentation"]
+    assert finalized.correction_log["cue_changes"][0]["resegment_source"] == ["step3_heuristic_resegmentation"]
+
+
+def test_finalize_cues_heuristically_splits_dense_list_like_cue_before_writeback():
+    glossary = RunGlossary(terms=[])
+    cues = [
+        SubtitleCue(index=1, start=20.0, end=22.0, text="系统根据这些物体的距离 速度 轨迹预测"),
+    ]
+    raw_payload = {
+        "segments": [
+            {
+                "id": 2,
+                "start": 20.0,
+                "end": 22.0,
+                "text": "系统根据这些物体的距离速度轨迹预测",
+                "words": [
+                    {"id": 1, "text": "系统", "start": 20.0, "end": 20.2, "punctuation": ""},
+                    {"id": 2, "text": "根据", "start": 20.2, "end": 20.45, "punctuation": ""},
+                    {"id": 3, "text": "这些", "start": 20.45, "end": 20.65, "punctuation": ""},
+                    {"id": 4, "text": "物体", "start": 20.65, "end": 20.9, "punctuation": ""},
+                    {"id": 5, "text": "的", "start": 20.9, "end": 21.0, "punctuation": ""},
+                    {"id": 6, "text": "距离", "start": 21.0, "end": 21.3, "punctuation": ""},
+                    {"id": 7, "text": "速度", "start": 21.3, "end": 21.55, "punctuation": ""},
+                    {"id": 8, "text": "轨迹", "start": 21.55, "end": 21.8, "punctuation": ""},
+                    {"id": 9, "text": "预测", "start": 21.8, "end": 22.0, "punctuation": ""},
+                ],
+            }
+        ]
+    }
+
+    finalized = finalize_cues(
+        cues=cues,
+        glossary=glossary,
+        raw_payload=raw_payload,
+        aligned_segments=[
+            {
+                "line_id": 1,
+                "text": "系统根据这些物体的距离 速度 轨迹预测",
+                "start": 20.0,
+                "end": 22.0,
+                "raw_token_start_index": 0,
+                "raw_token_end_index": 8,
+                "alignment_score": 1.0,
+                "warnings": [],
+            }
+        ],
+    )
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in finalized.cues] == [
+        (1, 20.0, 21.3, "系统根据这些物体的距离"),
+        (2, 21.3, 22.0, "速度 轨迹预测"),
+    ]
+    assert finalized.change_breakdown["delivery_resegmentations"]["count"] == 1
+    assert finalized.delivery_audit["cue_splitting"]["split_count"] == 1
+    assert finalized.delivery_audit["cue_splitting"]["max_length"] == 11
+    assert finalized.correction_log["cue_changes"][0]["after"] == "系统根据这些物体的距离\n速度 轨迹预测"
+
+
+def test_finalize_cues_does_not_split_mixed_script_spacing_only_cue():
+    glossary = RunGlossary(terms=[GlossaryEntry(term="FunASR API", aliases=["funasr api"])])
+    cues = [
+        SubtitleCue(index=1, start=0.0, end=1.4, text="他提到 FunASR API"),
+    ]
+    raw_payload = {
+        "segments": [
+            {
+                "id": 3,
+                "start": 0.0,
+                "end": 1.4,
+                "text": "他提到FunASRAPI",
+                "words": [
+                    {"id": 1, "text": "他提到", "start": 0.0, "end": 0.45, "punctuation": ""},
+                    {"id": 2, "text": "FunASR", "start": 0.45, "end": 0.95, "punctuation": ""},
+                    {"id": 3, "text": "API", "start": 0.95, "end": 1.4, "punctuation": ""},
+                ],
+            }
+        ]
+    }
+
+    finalized = finalize_cues(
+        cues=cues,
+        glossary=glossary,
+        raw_payload=raw_payload,
+        aligned_segments=[
+            {
+                "line_id": 1,
+                "text": "他提到 FunASR API",
+                "start": 0.0,
+                "end": 1.4,
+                "raw_token_start_index": 0,
+                "raw_token_end_index": 2,
+                "alignment_score": 1.0,
+                "warnings": [],
+            }
+        ],
+    )
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in finalized.cues] == [(1, 0.0, 1.4, "他提到 FunASR API")]
+    assert finalized.change_breakdown["delivery_resegmentations"]["count"] == 0
+    assert finalized.delivery_audit["resegment_source"] == []
+    assert finalized.correction_log["cue_changes"] == []
+
+
+def test_finalize_cues_skips_heuristic_resegmentation_when_alignment_metadata_is_incomplete():
+    glossary = RunGlossary(terms=[])
+    cues = [
+        SubtitleCue(index=1, start=10.0, end=12.0, text="说完云端的 我们再来看看"),
+    ]
+    raw_payload = {
+        "segments": [
+            {
+                "id": 1,
+                "start": 10.0,
+                "end": 12.0,
+                "text": "说完云端的我们再来看看",
+                "words": [],
+            }
+        ]
+    }
+
+    finalized = finalize_cues(
+        cues=cues,
+        glossary=glossary,
+        raw_payload=raw_payload,
+        aligned_segments=[
+            {
+                "line_id": 1,
+                "text": "说完云端的 我们再来看看",
+                "start": 10.0,
+                "end": 12.0,
+                "alignment_score": 1.0,
+                "warnings": [],
+            }
+        ],
+    )
+
+    assert [(cue.index, cue.start, cue.end, cue.text) for cue in finalized.cues] == [(1, 10.0, 12.0, "说完云端的 我们再来看看")]
+    assert finalized.change_breakdown["delivery_resegmentations"]["count"] == 0
+    assert finalized.delivery_audit["resegment_source"] == []
+    assert finalized.correction_log["cue_changes"] == []
+
+
 def test_apply_delivery_timing_smoothing_snaps_first_cue_and_fills_positive_gaps():
     cues = [
         SubtitleCue(index=1, start=0.5, end=1.0, text="第一句"),

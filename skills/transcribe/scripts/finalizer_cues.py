@@ -143,6 +143,8 @@ def apply_cue_splits(
     split_decisions: list[dict[str, Any]],
     raw_payload: dict[str, Any],
     aligned_segments: list[dict[str, Any]],
+    change_type: str = "agent_delivery_resegmentation",
+    resegment_source: str = "agent_step3_manual_review",
 ) -> CueSplitApplicationResult:
     decision_map = {int(item["cue_index"]): list(item.get("texts") or []) for item in split_decisions}
     aligned_map = {int(item["line_id"]): item for item in aligned_segments}
@@ -230,8 +232,8 @@ def apply_cue_splits(
                 "before_cues": [{"cue_index": cue.index, "text": cue.text}],
                 "after_cues": [{"cue_index": item.index, "text": item.text} for item in created_cues],
                 "source_cue_indexes": [cue.index],
-                "change_types": ["agent_delivery_resegmentation"],
-                "resegment_source": ["agent_step3_manual_review"],
+                "change_types": [change_type],
+                "resegment_source": [resegment_source],
             }
         )
         cue_splits.append(

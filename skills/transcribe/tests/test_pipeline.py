@@ -429,6 +429,154 @@ def test_run_minimal_pipeline_writes_required_artifacts(tmp_path):
     assert "，" not in script_pass_srt
 
 
+def test_write_step3_review_artifacts_records_heuristic_resegmentation_in_report_and_artifacts(tmp_path):
+    run_dir = tmp_path / "run-step3-heuristic"
+    run_dir.mkdir()
+    report_path = run_dir / "report.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "schema": "transcribe.report.v3",
+                "step3_status": "awaiting_agent_review",
+                "step3_text_authority": "interactive-agent",
+                "step3_alert_reasons": [],
+                "manual_review_required": False,
+                "final_delivery_status": "awaiting_agent_review",
+                "final_delivery_risk": "pending",
+                "final_delivery_reasons": [],
+                "finalizer_change_count": 0,
+                "finalizer_change_breakdown": {
+                    "alias_replacements": {"count": 0, "examples": []},
+                    "spacing_normalizations": {"count": 0, "examples": []},
+                    "punctuation_normalizations": {"count": 0, "examples": []},
+                    "duplicate_collapses": {"count": 0, "examples": []},
+                    "delivery_resegmentations": {"count": 0, "examples": []},
+                },
+                "finalizer_applied_regions": "",
+                "finalizer_mode": "agent-session-pending",
+                "finalizer_model_provider": None,
+                "finalizer_model_name": None,
+                "finalizer_fallback_used": False,
+                "finalizer_fallback_reason": None,
+                "finalizer_fallback_code": None,
+                "segmentation_stats": {"script_pass_cue_count": 1, "edited_cue_count": None},
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    finalizer_result = FinalizerResult(
+        cues=[
+            SubtitleCue(index=1, start=0.0, end=0.8, text="说完云端的"),
+            SubtitleCue(index=2, start=0.8, end=1.6, text="我们再来看看"),
+        ],
+        change_breakdown={
+            "alias_replacements": {"count": 0, "examples": []},
+            "spacing_normalizations": {"count": 0, "examples": []},
+            "punctuation_normalizations": {"count": 0, "examples": []},
+            "duplicate_collapses": {"count": 0, "examples": []},
+            "delivery_resegmentations": {"count": 1, "examples": ["1->1,2"]},
+        },
+        applied_regions=[1],
+        applied_region_summary="1",
+        correction_log={
+            "schema": "transcribe.correction_log.v1",
+            "cue_changes": [
+                {
+                    "cue_index": 1,
+                    "start": 0.0,
+                    "end": 1.6,
+                    "before": "说完云端的 我们再来看看",
+                    "after": "说完云端的\n我们再来看看",
+                    "before_cues": [{"cue_index": 1, "text": "说完云端的 我们再来看看"}],
+                    "after_cues": [
+                        {"cue_index": 1, "text": "说完云端的"},
+                        {"cue_index": 2, "text": "我们再来看看"},
+                    ],
+                    "source_cue_indexes": [1],
+                    "change_types": ["step3_heuristic_resegmentation"],
+                    "resegment_source": ["step3_heuristic_resegmentation"],
+                }
+            ],
+            "cue_diffs": [],
+            "cue_splits": [
+                {
+                    "original_line_id": 1,
+                    "new_line_ids": [1, 2],
+                    "split_type": "token_anchored",
+                    "split_confidence": "high",
+                    "start_alignment_delta_ms": 0,
+                    "risk_level": "low",
+                    "used_fallback": False,
+                    "fallback_steps": [],
+                    "split_point_token_index": 3,
+                }
+            ],
+            "split_statistics": {
+                "total_splits": 1,
+                "token_anchored_count": 1,
+                "partial_token_anchored_count": 0,
+                "proportional_fallback_count": 0,
+                "low_confidence_split_count": 0,
+            },
+            "applied_region_summary": "1",
+        },
+        delivery_audit={
+            "schema": "transcribe.final_delivery_audit.v1",
+            "status": "ready",
+            "risk": "low",
+            "checks": {"cue_count": 2, "resegment_count": 1},
+            "resegment_source": ["step3_heuristic_resegmentation"],
+            "cue_splitting": {
+                "split_count": 1,
+                "high_risk_count": 0,
+                "max_length": 6,
+                "mean_alignment_delta_ms": 0.0,
+            },
+            "reasons": [],
+            "cue_diffs": [],
+        },
+        split_operations=[
+            {
+                "original_line_id": 1,
+                "new_line_ids": [1, 2],
+                "split_type": "token_anchored",
+                "split_confidence": "high",
+                "start_alignment_delta_ms": 0,
+                "risk_level": "low",
+                "used_fallback": False,
+                "fallback_steps": [],
+                "split_point_token_index": 3,
+            }
+        ],
+        validation_fallback_reasons=[],
+        finalizer_mode="rules-primary",
+        finalizer_model_provider=None,
+        finalizer_model_name=None,
+        finalizer_fallback_used=False,
+        finalizer_fallback_reason=None,
+        finalizer_fallback_code=None,
+        text_authority="inherited",
+        manual_review_required=False,
+        alert_reasons=[],
+    )
+
+    write_step3_review_artifacts(run_dir=run_dir, finalizer_result=finalizer_result)
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    correction_log = json.loads((run_dir / "correction_log.json").read_text(encoding="utf-8"))
+    final_delivery_audit = json.loads((run_dir / "final_delivery_audit.json").read_text(encoding="utf-8"))
+
+    assert report["finalizer_change_breakdown"]["delivery_resegmentations"] == {"count": 1, "examples": ["1->1,2"]}
+    assert report["split_count"] == 1
+    assert report["cue_splitting"]["split_count"] == 1
+    assert report["finalizer_applied_regions"] == "1"
+    assert correction_log["cue_changes"][0]["change_types"] == ["step3_heuristic_resegmentation"]
+    assert correction_log["cue_changes"][0]["resegment_source"] == ["step3_heuristic_resegmentation"]
+    assert final_delivery_audit["resegment_source"] == ["step3_heuristic_resegmentation"]
+
+
 def test_write_step3_review_artifacts_updates_report_with_finalized_metrics(tmp_path):
     run_dir = tmp_path / "run-step3"
     run_dir.mkdir()
